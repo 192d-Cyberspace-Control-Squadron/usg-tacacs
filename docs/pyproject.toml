@@ -1,0 +1,7 @@
+[project]
+name = "usg-tacacs-docs"
+version = "0.1.0"
+description = "Zensical site for usg-tacacs documentation"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["zensical>=0.0.14"]
