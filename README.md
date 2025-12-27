@@ -1,4 +1,4 @@
-# tacacs-rs
+# usg-tacacs
 
 Rust TACACS+ server with:
 
@@ -11,11 +11,13 @@ Rust TACACS+ server with:
 - Command normalization + regex auto-anchoring
 
 ## Validate policy
+
 cargo run -p tacacs-server -- \
   --check-policy ./policy/policy.example.json \
   --schema ./policy/policy.schema.json
 
 ## Run TLS server
+
 cargo run -p tacacs-server -- \
   --listen-tls 0.0.0.0:300 \
   --tls-cert ./certs/server.pem \
