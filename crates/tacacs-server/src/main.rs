@@ -15,13 +15,13 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
-    ACCT_STATUS_SUCCESS, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
-    AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_PASS, AUTHEN_TYPE_ARAP, AUTHEN_TYPE_ASCII,
-    AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL,
-    AUTHOR_STATUS_PASS_ADD, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket,
-    AuthenReply, AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
-    validate_author_response_header, write_accounting_response, write_authen_reply,
-    write_author_response,
+    ACCT_STATUS_SUCCESS, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL,
+    AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER,
+    AUTHEN_STATUS_PASS, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR,
+    AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AccountingResponse, AuthSessionState, AuthenData,
+    AuthenPacket, AuthenReply, AuthorizationResponse, Packet, read_packet,
+    validate_accounting_response_header, validate_author_response_header,
+    write_accounting_response, write_authen_reply, write_author_response,
 };
 
 #[tokio::main]
@@ -288,6 +288,8 @@ where
                             authen_type: Some(start.authen_type),
                             challenge: None,
                             username: Some(start.user.clone()),
+                            ascii_need_user: false,
+                            ascii_need_pass: false,
                             chap_id: None,
                         }),
                         AuthenPacket::Continue(_) => AuthSessionState {
@@ -296,6 +298,8 @@ where
                             authen_type: None,
                             challenge: None,
                             username: None,
+                            ascii_need_user: false,
+                            ascii_need_pass: false,
                             chap_id: None,
                         },
                     });
@@ -307,7 +311,55 @@ where
 
                 let reply = match packet {
                     AuthenPacket::Start(ref start) => match start.authen_type {
-                        AUTHEN_TYPE_ASCII | AUTHEN_TYPE_PAP => {
+                        AUTHEN_TYPE_ASCII => {
+                            state.authen_type = Some(AUTHEN_TYPE_ASCII);
+                            state.username = if start.user.is_empty() {
+                                None
+                            } else {
+                                Some(start.user.clone())
+                            };
+                            state.ascii_need_user = state.username.is_none();
+                            if state.ascii_need_user {
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_GETUSER,
+                                    flags: 0,
+                                    server_msg: "Username:".into(),
+                                    data: Vec::new(),
+                                }
+                            } else if !start.data.is_empty() {
+                                match String::from_utf8(start.data.clone()) {
+                                    Ok(password) => AuthenReply {
+                                        status: if verify_pap(
+                                            state.username.as_deref().unwrap_or_default(),
+                                            &password,
+                                            &credentials,
+                                        ) {
+                                            AUTHEN_STATUS_PASS
+                                        } else {
+                                            AUTHEN_STATUS_FAIL
+                                        },
+                                        flags: 0,
+                                        server_msg: String::new(),
+                                        data: Vec::new(),
+                                    },
+                                    Err(_) => AuthenReply {
+                                        status: AUTHEN_STATUS_ERROR,
+                                        flags: 0,
+                                        server_msg: "invalid ASCII password encoding".into(),
+                                        data: Vec::new(),
+                                    },
+                                }
+                            } else {
+                                state.ascii_need_pass = true;
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_GETPASS,
+                                    flags: AUTHEN_FLAG_NOECHO,
+                                    server_msg: "Password:".into(),
+                                    data: Vec::new(),
+                                }
+                            }
+                        }
+                        AUTHEN_TYPE_PAP => {
                             let data = start.parsed_data();
                             let password = match data {
                                 AuthenData::Pap { ref password } => password.as_str(),
@@ -355,12 +407,6 @@ where
                                 }
                             }
                         }
-                        AUTHEN_TYPE_ARAP => AuthenReply {
-                            status: AUTHEN_STATUS_FAIL,
-                            flags: 0,
-                            server_msg: "ARAP authentication not supported".into(),
-                            data: Vec::new(),
-                        },
                         _ => AuthenReply {
                             status: AUTHEN_STATUS_FOLLOW,
                             flags: 0,
@@ -368,8 +414,61 @@ where
                             data: Vec::new(),
                         },
                     },
-                    AuthenPacket::Continue(ref cont) => {
-                        if state.challenge.is_some() {
+                    AuthenPacket::Continue(ref cont) => match state.authen_type {
+                        Some(AUTHEN_TYPE_ASCII) => {
+                            if state.ascii_need_user {
+                                match String::from_utf8(cont.data.clone()) {
+                                    Ok(username) if !username.is_empty() => {
+                                        state.username = Some(username);
+                                        state.ascii_need_user = false;
+                                        state.ascii_need_pass = true;
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETPASS,
+                                            flags: AUTHEN_FLAG_NOECHO,
+                                            server_msg: "Password:".into(),
+                                            data: Vec::new(),
+                                        }
+                                    }
+                                    _ => AuthenReply {
+                                        status: AUTHEN_STATUS_ERROR,
+                                        flags: 0,
+                                        server_msg: "username required".into(),
+                                        data: Vec::new(),
+                                    },
+                                }
+                            } else if state.ascii_need_pass {
+                                match String::from_utf8(cont.data.clone()) {
+                                    Ok(password) => {
+                                        state.ascii_need_pass = false;
+                                        let user = state.username.clone().unwrap_or_default();
+                                        AuthenReply {
+                                            status: if verify_pap(&user, &password, &credentials) {
+                                                AUTHEN_STATUS_PASS
+                                            } else {
+                                                AUTHEN_STATUS_FAIL
+                                            },
+                                            flags: 0,
+                                            server_msg: String::new(),
+                                            data: Vec::new(),
+                                        }
+                                    }
+                                    Err(_) => AuthenReply {
+                                        status: AUTHEN_STATUS_ERROR,
+                                        flags: 0,
+                                        server_msg: "invalid ASCII input".into(),
+                                        data: Vec::new(),
+                                    },
+                                }
+                            } else {
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: "unexpected continue".into(),
+                                    data: Vec::new(),
+                                }
+                            }
+                        }
+                        _ if state.challenge.is_some() => {
                             let user = state.username.clone().unwrap_or_default();
                             match state.authen_type {
                                 Some(AUTHEN_TYPE_CHAP) => {
@@ -421,12 +520,6 @@ where
                                         }
                                     }
                                 }
-                                Some(AUTHEN_TYPE_ARAP) => AuthenReply {
-                                    status: AUTHEN_STATUS_FAIL,
-                                    flags: 0,
-                                    server_msg: "ARAP authentication not supported".into(),
-                                    data: Vec::new(),
-                                },
                                 _ => AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
@@ -434,18 +527,17 @@ where
                                     data: Vec::new(),
                                 },
                             }
-                        } else {
-                            AuthenReply {
-                                status: AUTHEN_STATUS_FAIL,
-                                flags: 0,
-                                server_msg: format!(
-                                    "unexpected authentication continue (flags {:02x})",
-                                    cont.flags
-                                ),
-                                data: Vec::new(),
-                            }
                         }
-                    }
+                        _ => AuthenReply {
+                            status: AUTHEN_STATUS_FAIL,
+                            flags: 0,
+                            server_msg: format!(
+                                "unexpected authentication continue (flags {:02x})",
+                                cont.flags
+                            ),
+                            data: Vec::new(),
+                        },
+                    },
                 };
                 let header = match packet {
                     AuthenPacket::Start(ref start) => &start.header,

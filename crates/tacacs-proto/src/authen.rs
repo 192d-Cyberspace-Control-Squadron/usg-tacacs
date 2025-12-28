@@ -57,6 +57,8 @@ pub struct AuthSessionState {
     pub challenge: Option<Vec<u8>>,
     pub username: Option<String>,
     pub chap_id: Option<u8>,
+    pub ascii_need_user: bool,
+    pub ascii_need_pass: bool,
 }
 
 impl AuthSessionState {
@@ -69,6 +71,8 @@ impl AuthSessionState {
             challenge: None,
             username: Some(username),
             chap_id: None,
+            ascii_need_user: false,
+            ascii_need_pass: false,
         })
     }
 
