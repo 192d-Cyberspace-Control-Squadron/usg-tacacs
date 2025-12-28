@@ -27,8 +27,8 @@ use usg_tacacs_proto::{
     AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
     AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
-    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AccountingRequest,
-    AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
+    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
+    AccountingRequest, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
     AuthorizationRequest, AuthorizationResponse, Packet, read_packet,
     validate_accounting_response_header, validate_author_response_header,
     write_accounting_response, write_authen_reply, write_author_response,
@@ -95,6 +95,80 @@ fn authz_context(req: &AuthorizationRequest) -> String {
     format!("service={service};protocol={protocol};cmd={cmd};args={args}")
 }
 
+fn authz_allow_attrs(req: &AuthorizationRequest) -> Vec<String> {
+    let mut out = Vec::new();
+    let attrs = req.attributes();
+    if let Some(service) = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("service"))
+        .and_then(|a| a.value.as_deref())
+    {
+        out.push(format!("service={service}"));
+    }
+    if let Some(protocol) = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .and_then(|a| a.value.as_deref())
+    {
+        out.push(format!("protocol={protocol}"));
+    }
+    for attr in attrs.iter().filter(|a| a.name.eq_ignore_ascii_case("cmd")) {
+        if let Some(val) = attr.value.as_deref() {
+            out.push(format!("cmd={val}"));
+        }
+    }
+    for attr in attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
+    {
+        if let Some(val) = attr.value.as_deref() {
+            out.push(format!("cmd-arg={val}"));
+        }
+    }
+    out
+}
+
+fn acct_attr<'a>(args: &'a [String], name: &str) -> &'a str {
+    let prefix = format!("{name}=");
+    args.iter()
+        .find_map(|a| {
+            if a.to_lowercase().starts_with(&prefix) {
+                a.split_once('=').map(|(_, v)| v)
+            } else {
+                None
+            }
+        })
+        .unwrap_or("-")
+}
+
+fn accounting_success_response(req: &AccountingRequest) -> AccountingResponse {
+    let acct_type = if req.flags & ACCT_FLAG_START != 0 {
+        "start"
+    } else if req.flags & ACCT_FLAG_STOP != 0 {
+        "stop"
+    } else if req.flags & ACCT_FLAG_WATCHDOG != 0 {
+        "watchdog"
+    } else {
+        "unknown"
+    };
+    let server_msg = format!("accounting {acct_type} accepted");
+    let data = format!(
+        "type={acct_type};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
+        acct_attr(&req.args, "service"),
+        acct_attr(&req.args, "cmd"),
+        acct_attr(&req.args, "task_id"),
+        acct_attr(&req.args, "status"),
+        acct_attr(&req.args, "bytes_in"),
+        acct_attr(&req.args, "bytes_out")
+    );
+    AccountingResponse {
+        status: ACCT_STATUS_SUCCESS,
+        server_msg,
+        data,
+        args: Vec::new(),
+    }
+}
+
 fn authz_semantic_detail(msg: &str) -> (&'static str, String) {
     match msg {
         "authorization must include exactly one service attribute" => {
@@ -114,6 +188,8 @@ fn authz_semantic_detail(msg: &str) -> (&'static str, String) {
         "cmd attribute must have a value" => ("cmd-empty", msg.to_string()),
         "cmd-arg attributes must have values" => ("cmd-arg-empty", msg.to_string()),
         "service attribute must precede command attributes" => ("service-order", msg.to_string()),
+        "service attribute must precede protocol attributes" => ("service-order", msg.to_string()),
+        "authorization service attribute value unknown" => ("service-unknown", msg.to_string()),
         "priv-lvl must be numeric" => ("priv-nan", msg.to_string()),
         "priv-lvl must be 0-15" => ("priv-range", msg.to_string()),
         "priv-lvl attribute must match header priv_lvl" => ("priv-mismatch", msg.to_string()),
@@ -212,6 +288,22 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
     if service_val.is_empty() {
         return Err("authorization service attribute must have a value");
     }
+    let allowed_services = [
+        "shell",
+        "login",
+        "enable",
+        "ppp",
+        "arap",
+        "tty-daemon",
+        "connection",
+        "none",
+    ];
+    if !allowed_services
+        .iter()
+        .any(|s| service_val.eq_ignore_ascii_case(s))
+    {
+        return Err("authorization service attribute value unknown");
+    }
 
     let protocol_attr = attrs
         .iter()
@@ -260,6 +352,15 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .iter()
         .position(|a| a.to_lowercase().starts_with("service="))
         .unwrap_or(0);
+    let protocol_positions = req
+        .args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
+        .map(|(i, _)| i);
+    if protocol_positions.clone().any(|i| i < service_pos) {
+        return Err("service attribute must precede protocol attributes");
+    }
     let cmd_positions = req
         .args
         .iter()
@@ -571,10 +672,10 @@ where
                                 data.push_str(";ctx=");
                                 data.push_str(&ctx);
                                 let resp = AuthorizationResponse {
-                                    status: AUTHOR_STATUS_PASS_ADD,
+                                    status: AUTHOR_STATUS_PASS_REPL,
                                     server_msg: String::new(),
                                     data: data.clone(),
-                                    args: Vec::new(),
+                                    args: authz_allow_attrs(&request),
                                 };
                                 audit_event(
                                     "authz_policy_allow",
@@ -666,24 +767,64 @@ where
                     AuthenPacket::Start(start) => start.header.session_id,
                     AuthenPacket::Continue(cont) => cont.header.session_id,
                 };
-                if let AuthenPacket::Start(start) = &packet {
-                    if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
-                        warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
-                        let reply = AuthenReply {
-                            status: AUTHEN_STATUS_ERROR,
-                            flags: 0,
-                            server_msg: err.to_string(),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        };
-                        let _ = write_authen_reply(
-                            &mut stream,
-                            &start.header,
-                            &reply,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
+                match &packet {
+                    AuthenPacket::Start(start) => {
+                        if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
+                            warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
+                            let reply = AuthenReply {
+                                status: AUTHEN_STATUS_ERROR,
+                                flags: 0,
+                                server_msg: err.to_string(),
+                                server_msg_raw: Vec::new(),
+                                data: Vec::new(),
+                            };
+                            audit_event(
+                                "authn_rfc_invalid",
+                                &peer,
+                                &start.user,
+                                session_id,
+                                "error",
+                                "rfc-validate",
+                                &err.to_string(),
+                            );
+                            let _ = write_authen_reply(
+                                &mut stream,
+                                &start.header,
+                                &reply,
+                                secret.as_deref().map(|s| s.as_slice()),
+                            )
+                            .await;
+                            break;
+                        }
+                    }
+                    AuthenPacket::Continue(cont) => {
+                        if let Err(err) = usg_tacacs_proto::validate_authen_continue(cont) {
+                            warn!(peer = %peer, session = session_id, error = %err, "authentication continue failed RFC validation");
+                            let reply = AuthenReply {
+                                status: AUTHEN_STATUS_ERROR,
+                                flags: 0,
+                                server_msg: err.to_string(),
+                                server_msg_raw: Vec::new(),
+                                data: Vec::new(),
+                            };
+                            audit_event(
+                                "authn_rfc_invalid",
+                                &peer,
+                                "",
+                                session_id,
+                                "error",
+                                "rfc-validate",
+                                &err.to_string(),
+                            );
+                            let _ = write_authen_reply(
+                                &mut stream,
+                                &cont.header,
+                                &reply,
+                                secret.as_deref().map(|s| s.as_slice()),
+                            )
+                            .await;
+                            break;
+                        }
                     }
                 }
                 let single_connect_flag = match &packet {
@@ -856,6 +997,30 @@ where
                 if let AuthenPacket::Continue(ref cont) = packet {
                     if let Err(err) = state.validate_client(&cont.header) {
                         warn!(error = %err, peer = %peer, "auth sequence invalid");
+                        let reply = AuthenReply {
+                            status: AUTHEN_STATUS_ERROR,
+                            flags: 0,
+                            server_msg: err.to_string(),
+                            server_msg_raw: Vec::new(),
+                            data: Vec::new(),
+                        };
+                        audit_event(
+                            "authn_sequence_error",
+                            &peer,
+                            state.username.as_deref().unwrap_or(""),
+                            session_id,
+                            "error",
+                            "sequence",
+                            &err.to_string(),
+                        );
+                        let _ = write_authen_reply(
+                            &mut stream,
+                            &cont.header,
+                            &reply,
+                            secret.as_deref().map(|s| s.as_slice()),
+                        )
+                        .await;
+                        break;
                     }
                 }
 
@@ -1253,7 +1418,7 @@ where
                     let response = AccountingResponse {
                         status: ACCT_STATUS_ERROR,
                         server_msg: err.to_string(),
-                        data: String::new(),
+                        data: format!("reason=rfc-validate;detail={err}"),
                         args: Vec::new(),
                     };
                     let meta =
@@ -1342,12 +1507,7 @@ where
                     warn!(error = %err, peer = %peer, "accounting header invalid");
                 }
                 let response = match validate_accounting_semantics(&request) {
-                    Ok(()) => AccountingResponse {
-                        status: ACCT_STATUS_SUCCESS,
-                        server_msg: String::new(),
-                        data: String::new(),
-                        args: Vec::new(),
-                    },
+                    Ok(()) => accounting_success_response(&request),
                     Err(msg) => {
                         warn!(
                             peer = %peer,
@@ -1359,7 +1519,7 @@ where
                         let resp = AccountingResponse {
                             status: ACCT_STATUS_ERROR,
                             server_msg: msg.to_string(),
-                            data: String::new(),
+                            data: format!("reason=semantic-invalid;detail={msg}"),
                             args: Vec::new(),
                         };
                         let meta = format!(

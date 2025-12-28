@@ -577,6 +577,20 @@ pub fn validate_authen_start(req: &authen::AuthenStart) -> Result<()> {
     Ok(())
 }
 
+/// Validate an outgoing authentication continue packet for basic RFC compliance.
+pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
+    ensure!(
+        req.header.seq_no % 2 == 0,
+        "authentication continue must use even sequence number"
+    );
+    // Only AUTHEN_FLAG_NOECHO is defined for continue requests per RFC.
+    ensure!(
+        req.flags == 0 || req.flags == crate::AUTHEN_FLAG_NOECHO,
+        "authentication continue flags invalid"
+    );
+    Ok(())
+}
+
 pub async fn read_accounting_response<R>(
     reader: &mut R,
     secret: Option<&[u8]>,
