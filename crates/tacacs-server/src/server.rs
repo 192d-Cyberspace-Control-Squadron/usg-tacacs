@@ -8,6 +8,7 @@ use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
+use hex;
 use openssl::rand::rand_bytes;
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -75,6 +76,23 @@ fn authz_reason_response(
         data,
         args: Vec::new(),
     }
+}
+
+fn authz_context(req: &AuthorizationRequest) -> String {
+    let attrs = req.attributes();
+    let service = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("service"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let protocol = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .and_then(|a| a.value.as_deref())
+        .unwrap_or("-");
+    let cmd = req.command_string().unwrap_or_else(|| "-".to_string());
+    let args = req.args.len();
+    format!("service={service};protocol={protocol};cmd={cmd};args={args}")
 }
 
 fn authz_semantic_detail(msg: &str) -> (&'static str, String) {
@@ -521,6 +539,7 @@ where
                 let decision = match validate_authorization_semantics(&request) {
                     Ok(()) => {
                         let policy = policy.read().await;
+                        let ctx = authz_context(&request);
                         if request.is_shell_start() {
                             let attrs = policy
                                 .shell_attributes_for(&request.user)
@@ -528,7 +547,7 @@ where
                             let resp = AuthorizationResponse {
                                 status: AUTHOR_STATUS_PASS_ADD,
                                 server_msg: String::new(),
-                                data: "reason=policy-shell".to_string(),
+                                data: format!("reason=policy-shell;ctx={ctx}"),
                                 args: attrs,
                             };
                             audit_event(
@@ -544,10 +563,17 @@ where
                         } else if let Some(cmd) = request.command_string() {
                             let decision = policy.authorize(&request.user, &cmd);
                             if decision.allowed {
+                                let mut data = String::from("reason=policy-allow");
+                                if let Some(rule) = decision.matched_rule.clone() {
+                                    data.push_str(";rule=");
+                                    data.push_str(&rule);
+                                }
+                                data.push_str(";ctx=");
+                                data.push_str(&ctx);
                                 let resp = AuthorizationResponse {
                                     status: AUTHOR_STATUS_PASS_ADD,
                                     server_msg: String::new(),
-                                    data: "reason=policy-allow".to_string(),
+                                    data: data.clone(),
                                     args: Vec::new(),
                                 };
                                 audit_event(
@@ -557,16 +583,22 @@ where
                                     request.header.session_id,
                                     "pass",
                                     "policy-allow",
-                                    &resp.data,
+                                    &data,
                                 );
                                 resp
                             } else {
-                                let resp = authz_reason_response(
+                                let mut resp = authz_reason_response(
                                     AUTHOR_STATUS_FAIL,
                                     format!("command '{cmd}' denied by policy"),
                                     "policy-deny",
                                     Some(cmd),
                                 );
+                                if let Some(rule) = decision.matched_rule {
+                                    resp.data.push_str(";rule=");
+                                    resp.data.push_str(&rule);
+                                }
+                                resp.data.push_str(";ctx=");
+                                resp.data.push_str(&ctx);
                                 audit_event(
                                     "authz_policy_deny",
                                     &peer,
@@ -596,12 +628,14 @@ where
                             "authorization request rejected by semantic checks"
                         );
                         let (code, detail) = authz_semantic_detail(msg);
+                        let ctx = authz_context(&request);
                         let resp = authz_reason_response(
                             AUTHOR_STATUS_ERROR,
                             msg.to_string(),
                             code,
                             Some(detail.clone()),
                         );
+                        let meta = format!("{};ctx={ctx}", resp.data);
                         audit_event(
                             "authz_semantic_reject",
                             &peer,
@@ -609,7 +643,7 @@ where
                             request.header.session_id,
                             "error",
                             code,
-                            &resp.data,
+                            &meta,
                         );
                         resp
                     }
@@ -1138,6 +1172,39 @@ where
                     let user_for_log = state.username.as_deref().unwrap_or_else(|| {
                         state.username_raw.as_ref().map(|_| "<raw>").unwrap_or("")
                     });
+                    let msg_data = if !reply.server_msg.is_empty() {
+                        reply.server_msg.clone()
+                    } else if !reply.server_msg_raw.is_empty() {
+                        format!("raw={}", hex::encode(&reply.server_msg_raw))
+                    } else {
+                        String::new()
+                    };
+                    let attempts = format!(
+                        "attempts_total={};user_attempts={};pass_attempts={}",
+                        state.ascii_attempts, state.ascii_user_attempts, state.ascii_pass_attempts
+                    );
+                    let authn_type = match state.authen_type {
+                        Some(AUTHEN_TYPE_ASCII) => "ascii",
+                        Some(AUTHEN_TYPE_PAP) => "pap",
+                        Some(AUTHEN_TYPE_CHAP) => "chap",
+                        Some(_) => "other",
+                        None => "unknown",
+                    };
+                    let svc = state
+                        .service
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    let action = state
+                        .action
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "-".into());
+                    let msg_data = if msg_data.is_empty() {
+                        format!("{attempts};type={authn_type};service={svc};action={action}")
+                    } else {
+                        format!(
+                            "{attempts};type={authn_type};service={svc};action={action};msg={msg_data}"
+                        )
+                    };
                     audit_event(
                         "authn_terminal",
                         &peer,
@@ -1145,7 +1212,7 @@ where
                         session_id,
                         status_label,
                         "terminal",
-                        "",
+                        &msg_data,
                     );
                 }
 
@@ -1189,6 +1256,8 @@ where
                         data: String::new(),
                         args: Vec::new(),
                     };
+                    let meta =
+                        format!("flags=0x{:02x};attrs={}", request.flags, request.args.len());
                     audit_event(
                         "acct_rfc_invalid",
                         &peer,
@@ -1196,7 +1265,7 @@ where
                         request.header.session_id,
                         "error",
                         "rfc-validate",
-                        &response.data,
+                        &meta,
                     );
                     let _ = write_accounting_response(
                         &mut stream,
@@ -1293,6 +1362,12 @@ where
                             data: String::new(),
                             args: Vec::new(),
                         };
+                        let meta = format!(
+                            "flags=0x{:02x};attrs={};reason={}",
+                            request.flags,
+                            request.args.len(),
+                            msg
+                        );
                         audit_event(
                             "acct_semantic_reject",
                             &peer,
@@ -1300,7 +1375,7 @@ where
                             request.header.session_id,
                             "error",
                             msg,
-                            &resp.data,
+                            &meta,
                         );
                         resp
                     }
@@ -1315,11 +1390,48 @@ where
                     } else {
                         "unknown"
                     };
+                    let attrs = request.attributes();
+                    let service = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("service"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
+                    let cmd = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("cmd"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
+                    let task = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
+                    let status_attr = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("status"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
+                    let bytes_in = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("bytes_in"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
+                    let bytes_out = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("bytes_out"))
+                        .and_then(|a| a.value.as_deref())
+                        .unwrap_or("-");
                     let data = format!(
-                        "type={};flags=0x{:02x};attrs={}",
+                        "type={};flags=0x{:02x};attrs={};service={};cmd={};task_id={};status={};bytes_in={};bytes_out={}",
                         acct_type,
                         request.flags,
-                        request.args.len()
+                        request.args.len(),
+                        service,
+                        cmd,
+                        task,
+                        status_attr,
+                        bytes_in,
+                        bytes_out
                     );
                     audit_event(
                         "acct_accept",
