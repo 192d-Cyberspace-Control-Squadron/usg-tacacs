@@ -24,6 +24,7 @@ use usg_tacacs_proto::{
     validate_author_response_header, write_accounting_response, write_authen_reply,
     write_author_response,
 };
+const AUTHEN_CONT_ABORT: u8 = 0x01;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -576,7 +577,16 @@ where
                     },
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
-                            if state.ascii_need_user {
+                            if cont.flags & AUTHEN_CONT_ABORT != 0 {
+                                state.ascii_need_user = false;
+                                state.ascii_need_pass = false;
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: "authentication aborted".into(),
+                                    data: Vec::new(),
+                                }
+                            } else if state.ascii_need_user {
                                 match String::from_utf8(cont.data.clone()) {
                                     Ok(username) if !username.is_empty() => {
                                         state.username = Some(username);
@@ -590,26 +600,39 @@ where
                                         }
                                     }
                                     _ => AuthenReply {
-                                        status: AUTHEN_STATUS_ERROR,
+                                        status: AUTHEN_STATUS_GETUSER,
                                         flags: 0,
-                                        server_msg: "username required".into(),
+                                        server_msg: "Username:".into(),
                                         data: Vec::new(),
                                     },
                                 }
                             } else if state.ascii_need_pass {
                                 match String::from_utf8(cont.data.clone()) {
                                     Ok(password) => {
-                                        state.ascii_need_pass = false;
-                                        let user = state.username.clone().unwrap_or_default();
-                                        AuthenReply {
-                                            status: if verify_pap(&user, &password, &credentials) {
-                                                AUTHEN_STATUS_PASS
-                                            } else {
-                                                AUTHEN_STATUS_FAIL
-                                            },
-                                            flags: 0,
-                                            server_msg: String::new(),
-                                            data: Vec::new(),
+                                        if password.is_empty() {
+                                            AuthenReply {
+                                                status: AUTHEN_STATUS_GETPASS,
+                                                flags: AUTHEN_FLAG_NOECHO,
+                                                server_msg: "Password:".into(),
+                                                data: Vec::new(),
+                                            }
+                                        } else {
+                                            state.ascii_need_pass = false;
+                                            let user = state.username.clone().unwrap_or_default();
+                                            AuthenReply {
+                                                status: if verify_pap(
+                                                    &user,
+                                                    &password,
+                                                    &credentials,
+                                                ) {
+                                                    AUTHEN_STATUS_PASS
+                                                } else {
+                                                    AUTHEN_STATUS_FAIL
+                                                },
+                                                flags: 0,
+                                                server_msg: String::new(),
+                                                data: Vec::new(),
+                                            }
                                         }
                                     }
                                     Err(_) => AuthenReply {
@@ -621,9 +644,9 @@ where
                                 }
                             } else {
                                 AuthenReply {
-                                    status: AUTHEN_STATUS_FAIL,
+                                    status: AUTHEN_STATUS_RESTART,
                                     flags: 0,
-                                    server_msg: "unexpected continue".into(),
+                                    server_msg: "restart authentication".into(),
                                     data: Vec::new(),
                                 }
                             }
