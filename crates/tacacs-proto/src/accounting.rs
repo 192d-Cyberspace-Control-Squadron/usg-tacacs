@@ -92,6 +92,10 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
             "task_id",
             "elapsed_time",
             "status",
+            "start_time",
+            "elapsed_seconds",
+            "bytes_in",
+            "bytes_out",
         ],
     )?;
 

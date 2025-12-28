@@ -93,19 +93,65 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
         if code > 0x0f {
             return Err("accounting status code must be 0-15");
         }
+        // RFC Appendix B: 0=success, 1-15 error/other; treat >=1 as non-success.
+        if code >= 1 && !is_stop {
+            return Err("non-success accounting status is only valid on stop records");
+        }
+    }
+    // Optional traffic/elapsed attrs: ensure numeric if present.
+    for key in ["bytes_in", "bytes_out", "elapsed_seconds"].iter() {
+        parse_u32(key)?;
     }
     Ok(())
 }
 
 fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'static str> {
-    if !req.has_service_attr() {
-        return Err("authorization missing service attribute");
+    let attrs = req.attributes();
+    let service_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("service"))
+        .collect();
+    if service_attrs.len() != 1 {
+        return Err("authorization must include exactly one service attribute");
     }
-    if req.is_shell_start() {
+    let service_val = service_attrs[0].value.as_deref().unwrap_or("");
+    if service_val.is_empty() {
+        return Err("authorization service attribute must have a value");
+    }
+
+    let protocol_attr = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
+    let cmd_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .collect();
+    let cmd_arg_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
+        .collect();
+
+    if service_val.eq_ignore_ascii_case("shell") {
+        if protocol_attr.is_none() {
+            return Err("shell authorization requires protocol attribute");
+        }
+        if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
+            return Err("shell authorization must not include cmd/cmd-arg attributes");
+        }
         return Ok(());
     }
-    if !req.has_cmd_attrs() {
-        return Err("authorization missing command attributes");
+
+    if cmd_attrs.len() != 1 {
+        return Err("authorization must include exactly one cmd attribute");
+    }
+    if cmd_attrs[0].value.as_deref().unwrap_or("").is_empty() {
+        return Err("cmd attribute must have a value");
+    }
+    if cmd_arg_attrs
+        .iter()
+        .any(|a| a.value.as_deref().unwrap_or("").is_empty())
+    {
+        return Err("cmd-arg attributes must have values");
     }
     Ok(())
 }
