@@ -23,10 +23,22 @@
   "ascii_remaddr_prompts": {
     "10.0.0.1": "Remote 10.0.0.1 login:"
   },
+  "allow_raw_server_msg": true,
   "ascii_messages": {
     "success": "authentication succeeded",
     "failure": "invalid credentials",
     "abort": "authentication aborted"
+  },
+  "raw_server_msg_allow_prefixes": [],
+  "raw_server_msg_deny_prefixes": [],
+  "raw_server_msg_user_overrides": {
+    "alice": {
+      "allow": true,
+      "allow_prefixes": [],
+      "deny_prefixes": [],
+      "allow_services": [1],
+      "allow_actions": [1, 2]
+    }
   },
   "rules": [
     {

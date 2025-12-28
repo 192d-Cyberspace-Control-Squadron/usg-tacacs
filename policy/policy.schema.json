@@ -39,6 +39,47 @@
       "additionalProperties": { "type": "string" },
       "description": "Per-remote-address overrides for username prompt; keys are rem_addr strings."
     },
+    "allow_raw_server_msg": {
+      "type": "boolean",
+      "description": "When false, auth replies carrying raw server_msg bytes will be blocked/errored."
+    },
+    "raw_server_msg_allow_prefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional list of hex prefixes that are allowed for raw server_msg; if set, raw messages must match one of these prefixes."
+    },
+    "raw_server_msg_deny_prefixes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional list of hex prefixes that are denied for raw server_msg; deny takes precedence over allow."
+    },
+    "raw_server_msg_user_overrides": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "allow": { "type": "boolean" },
+          "allow_prefixes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "deny_prefixes": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "allow_services": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+          },
+          "allow_actions": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+          }
+        },
+        "additionalProperties": false
+      },
+      "description": "Per-user overrides for raw server_msg enforcement; keys are usernames (case-insensitive)."
+    },
     "ascii_messages": {
       "type": "object",
       "properties": {

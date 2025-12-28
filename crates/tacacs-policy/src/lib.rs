@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use jsonschema::{Draft, JSONSchema};
 use regex::Regex;
 use serde::Deserialize;
+use hex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -39,6 +40,14 @@ pub struct PolicyDocument {
     pub ascii_port_prompts: HashMap<String, String>,
     #[serde(default)]
     pub ascii_remaddr_prompts: HashMap<String, String>,
+    #[serde(default = "default_allow_raw_server_msg")]
+    pub allow_raw_server_msg: bool,
+    #[serde(default)]
+    pub raw_server_msg_allow_prefixes: Vec<String>,
+    #[serde(default)]
+    pub raw_server_msg_deny_prefixes: Vec<String>,
+    #[serde(default)]
+    pub raw_server_msg_user_overrides: HashMap<String, RawServerMsgOverride>,
     #[serde(default)]
     pub ascii_messages: Option<AsciiMessages>,
     #[serde(default)]
@@ -56,6 +65,19 @@ pub struct AsciiMessages {
     pub success: Option<String>,
     pub failure: Option<String>,
     pub abort: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawServerMsgOverride {
+    pub allow: Option<bool>,
+    #[serde(default)]
+    pub allow_prefixes: Vec<String>,
+    #[serde(default)]
+    pub deny_prefixes: Vec<String>,
+    #[serde(default)]
+    pub allow_services: Vec<u8>,
+    #[serde(default)]
+    pub allow_actions: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,8 +99,16 @@ pub struct PolicyEngine {
     ascii_password_prompts: HashMap<String, String>,
     ascii_port_prompts: HashMap<String, String>,
     ascii_remaddr_prompts: HashMap<String, String>,
+    allow_raw_server_msg: bool,
+    raw_server_msg_allow_prefixes: Vec<String>,
+    raw_server_msg_deny_prefixes: Vec<String>,
+    raw_server_msg_user_overrides: HashMap<String, RawServerMsgOverride>,
     ascii_messages: Option<AsciiMessages>,
     rules: Vec<Rule>,
+}
+
+fn default_allow_raw_server_msg() -> bool {
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -146,6 +176,22 @@ impl PolicyEngine {
                 .collect(),
             ascii_port_prompts: document.ascii_port_prompts,
             ascii_remaddr_prompts: document.ascii_remaddr_prompts,
+            allow_raw_server_msg: document.allow_raw_server_msg,
+            raw_server_msg_allow_prefixes: document
+                .raw_server_msg_allow_prefixes
+                .into_iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
+            raw_server_msg_deny_prefixes: document
+                .raw_server_msg_deny_prefixes
+                .into_iter()
+                .map(|s| s.to_lowercase())
+                .collect(),
+            raw_server_msg_user_overrides: document
+                .raw_server_msg_user_overrides
+                .into_iter()
+                .map(|(u, o)| (u.to_lowercase(), o))
+                .collect(),
             ascii_messages: document.ascii_messages,
             rules,
         })
@@ -220,14 +266,82 @@ impl PolicyEngine {
             .and_then(|p| p.password.as_deref())
     }
 
-    /// Hook for observing raw server messages from auth replies (currently a no-op).
+    /// Hook for observing/enforcing raw server messages from auth replies.
     pub fn observe_server_msg(
         &self,
-        _user: Option<&str>,
-        _port: Option<&str>,
-        _rem_addr: Option<&str>,
-        _raw: &[u8],
-    ) {
+        user: Option<&str>,
+        port: Option<&str>,
+        rem_addr: Option<&str>,
+        service: Option<u8>,
+        action: Option<u8>,
+        raw: &[u8],
+    ) -> bool {
+        if !self.allow_raw_server_msg && !raw.is_empty() {
+            return false;
+        }
+        if raw.is_empty() {
+            return true;
+        }
+        let hex = hex::encode(raw).to_lowercase();
+        if let Some(user) = user {
+            if let Some(override_policy) = self.raw_server_msg_user_overrides.get(&user.to_lowercase()) {
+                if let Some(allow) = override_policy.allow {
+                    if !allow {
+                        return false;
+                    }
+                }
+                if !override_policy.allow_services.is_empty() {
+                    if let Some(svc) = service {
+                        if !override_policy.allow_services.contains(&svc) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                if !override_policy.allow_actions.is_empty() {
+                    if let Some(act) = action {
+                        if !override_policy.allow_actions.contains(&act) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                if override_policy
+                    .deny_prefixes
+                    .iter()
+                    .any(|p| hex.starts_with(&p.to_lowercase()))
+                {
+                    return false;
+                }
+                if !override_policy.allow_prefixes.is_empty()
+                    && !override_policy
+                        .allow_prefixes
+                        .iter()
+                        .any(|p| hex.starts_with(&p.to_lowercase()))
+                {
+                    return false;
+                }
+            }
+        }
+        if self
+            .raw_server_msg_deny_prefixes
+            .iter()
+            .any(|p| hex.starts_with(p))
+        {
+            return false;
+        }
+        if !self.raw_server_msg_allow_prefixes.is_empty()
+            && !self
+                .raw_server_msg_allow_prefixes
+                .iter()
+                .any(|p| hex.starts_with(p))
+        {
+            return false;
+        }
+        let _ = (user, port, rem_addr); // reserved for future rule-based decisions
+        true
     }
 
     pub fn message_success(&self) -> Option<&str> {
