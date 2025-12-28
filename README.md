@@ -9,6 +9,8 @@ Rust TACACS+ server with:
 - JSON Schema validation + validate-only mode
 - SIGHUP hot reload
 - Command normalization + regex auto-anchoring
+- Capability/keepalive packet support (vendor-specific, single-connect/keepalive bits, request/ack)
+- Hardened RFC 8907 semantics: authz protocol/service checks, explicit FOLLOW rejection, richer audit telemetry
 
 ## Validate policy
 
