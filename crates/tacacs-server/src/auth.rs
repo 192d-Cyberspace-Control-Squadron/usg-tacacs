@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use openssl::hash::{MessageDigest, hash};
 use std::collections::HashMap;
+use usg_tacacs_proto::{
+    AuthSessionState, AuthenReply, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS,
+};
 
 pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -> bool {
     creds
@@ -44,4 +47,64 @@ pub fn compute_chap_response(
     buf.extend_from_slice(challenge);
     let digest = hash(MessageDigest::md5(), &buf).ok()?;
     Some(digest.as_ref() == response)
+}
+
+pub fn handle_chap_continue(
+    user: &str,
+    cont_data: &[u8],
+    state: &mut AuthSessionState,
+    credentials: &HashMap<String, String>,
+) -> AuthenReply {
+    if cont_data.len() != 1 + 16 {
+        return AuthenReply {
+            status: AUTHEN_STATUS_ERROR,
+            flags: 0,
+            server_msg: "invalid CHAP continue length".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+    }
+    if state.chap_id.is_some() && cont_data[0] != state.chap_id.unwrap() {
+        return AuthenReply {
+            status: AUTHEN_STATUS_FAIL,
+            flags: 0,
+            server_msg: "CHAP identifier mismatch".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        };
+    }
+    if let Some(expected) = compute_chap_response(
+        user,
+        credentials,
+        cont_data,
+        state.challenge.as_deref().unwrap_or(&[]),
+    ) {
+        state.challenge = None;
+        state.chap_id = None;
+        if expected {
+            AuthenReply {
+                status: AUTHEN_STATUS_PASS,
+                flags: 0,
+                server_msg: String::new(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        } else {
+            AuthenReply {
+                status: AUTHEN_STATUS_FAIL,
+                flags: 0,
+                server_msg: "invalid CHAP response".into(),
+                server_msg_raw: Vec::new(),
+                data: Vec::new(),
+            }
+        }
+    } else {
+        AuthenReply {
+            status: AUTHEN_STATUS_ERROR,
+            flags: 0,
+            server_msg: "missing credentials".into(),
+            server_msg_raw: Vec::new(),
+            data: Vec::new(),
+        }
+    }
 }
