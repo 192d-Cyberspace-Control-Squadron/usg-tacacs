@@ -2,9 +2,9 @@
 //! TACACS+ authorization packet structures plus parsing/encoding helpers.
 
 use crate::header::Header;
-use crate::util::{parse_attributes, read_string};
 use crate::util::validate_attributes;
-use anyhow::{anyhow, ensure, Result};
+use crate::util::{parse_attributes, read_string};
+use anyhow::{Result, anyhow, ensure};
 use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
@@ -71,7 +71,9 @@ impl AuthorizationRequest {
     }
 
     pub fn has_cmd_attrs(&self) -> bool {
-        self.args.iter().any(|a| a.starts_with("cmd=") || a.starts_with("cmd-arg="))
+        self.args
+            .iter()
+            .any(|a| a.starts_with("cmd=") || a.starts_with("cmd-arg="))
     }
 
     pub fn has_service_attr(&self) -> bool {
@@ -120,7 +122,9 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
     // Basic TACACS+ attr validation: require name=value, known prefixes, non-empty.
     validate_attributes(
         &args,
-        &["cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl"],
+        &[
+            "cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl",
+        ],
     )?;
 
     Ok(AuthorizationRequest {

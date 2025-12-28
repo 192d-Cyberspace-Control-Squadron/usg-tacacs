@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use openssl::hash::{hash, MessageDigest};
+use openssl::hash::{MessageDigest, hash};
 use std::collections::HashMap;
 
 pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -> bool {
-    creds.get(user).map(|stored| stored == password).unwrap_or(false)
+    creds
+        .get(user)
+        .map(|stored| stored == password)
+        .unwrap_or(false)
 }
 
 pub fn compute_chap_response(
@@ -24,8 +27,4 @@ pub fn compute_chap_response(
     buf.extend_from_slice(challenge);
     let digest = hash(MessageDigest::md5(), &buf).ok()?;
     Some(digest.as_ref() == response)
-}
-
-pub fn verify_arap(continue_data: &[u8], challenge: &[u8]) -> bool {
-    continue_data.len() == challenge.len() && continue_data == challenge
 }

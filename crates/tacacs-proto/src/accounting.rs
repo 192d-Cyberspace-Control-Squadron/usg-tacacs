@@ -77,7 +77,9 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
 
     validate_attributes(
         &args,
-        &["cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl", "task_id"],
+        &[
+            "cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl", "task_id",
+        ],
     )?;
 
     Ok(AccountingRequest {

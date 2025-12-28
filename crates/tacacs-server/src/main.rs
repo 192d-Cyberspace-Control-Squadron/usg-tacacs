@@ -1,27 +1,27 @@
-use anyhow::{bail, Context, Result};
+use crate::auth::{compute_chap_response, verify_pap};
+use crate::config::{Args, credentials_map};
+use crate::tls::build_tls_config;
+use anyhow::{Context, Result, bail};
 use clap::Parser;
+use openssl::rand::rand_bytes;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::RwLock;
-use openssl::rand::rand_bytes;
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
-use std::collections::HashMap;
-use crate::auth::{compute_chap_response, verify_arap, verify_pap};
-use crate::config::{Args, credentials_map};
-use crate::tls::build_tls_config;
-use usg_tacacs_policy::{validate_policy_file, PolicyEngine};
+use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
-    read_packet, validate_accounting_response_header, validate_author_response_header, write_accounting_response, write_authen_reply, write_author_response,
-    AuthenPacket, AuthenReply, AccountingResponse, AuthorizationResponse, Packet, AuthSessionState,
-    AuthenData,
-    AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_PASS,
-    AUTHOR_STATUS_ERROR,
-    AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, ACCT_STATUS_SUCCESS, AUTHEN_TYPE_ASCII,
-    AUTHEN_TYPE_PAP, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_ARAP,
+    ACCT_STATUS_SUCCESS, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
+    AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_PASS, AUTHEN_TYPE_ARAP, AUTHEN_TYPE_ASCII,
+    AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL,
+    AUTHOR_STATUS_PASS_ADD, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket,
+    AuthenReply, AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
+    validate_author_response_header, write_accounting_response, write_authen_reply,
+    write_author_response,
 };
 
 #[tokio::main]
@@ -65,7 +65,10 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .map(|s| s.len() >= usg_tacacs_proto::MIN_SECRET_LEN)
                 .unwrap_or(false));
-        if allow_unencrypted && shared_secret.as_ref().map(|s| s.len()).unwrap_or(0) < usg_tacacs_proto::MIN_SECRET_LEN {
+        if allow_unencrypted
+            && shared_secret.as_ref().map(|s| s.len()).unwrap_or(0)
+                < usg_tacacs_proto::MIN_SECRET_LEN
+        {
             warn!("TLS mode: shared secret missing/short; UNENCRYPTED packets will be accepted");
         }
         let cert = args
@@ -150,8 +153,14 @@ async fn serve_tls(
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(stream) => {
-                    if let Err(err) =
-                        handle_connection(stream, policy, format!("{peer_addr}"), secret, credentials).await
+                    if let Err(err) = handle_connection(
+                        stream,
+                        policy,
+                        format!("{peer_addr}"),
+                        secret,
+                        credentials,
+                    )
+                    .await
                     {
                         warn!(error = %err, peer = %peer_addr, "connection closed with error");
                     }
@@ -265,27 +274,31 @@ where
                     AuthenPacket::Start(start) => start.header.session_id,
                     AuthenPacket::Continue(cont) => cont.header.session_id,
                 };
-                let state = auth_states.entry(session_id).or_insert_with(|| match &packet {
-                    AuthenPacket::Start(start) => AuthSessionState::new_from_start(
-                        &start.header,
-                        start.authen_type,
-                        start.user.clone(),
-                    )
-                    .unwrap_or(AuthSessionState {
-                        last_seq: start.header.seq_no,
-                        expect_client: false,
-                        authen_type: Some(start.authen_type),
-                        challenge: None,
-                        username: Some(start.user.clone()),
-                    }),
-                    AuthenPacket::Continue(_) => AuthSessionState {
-                        last_seq: 0,
-                        expect_client: true,
-                        authen_type: None,
-                        challenge: None,
-                        username: None,
-                    },
-                });
+                let state = auth_states
+                    .entry(session_id)
+                    .or_insert_with(|| match &packet {
+                        AuthenPacket::Start(start) => AuthSessionState::new_from_start(
+                            &start.header,
+                            start.authen_type,
+                            start.user.clone(),
+                        )
+                        .unwrap_or(AuthSessionState {
+                            last_seq: start.header.seq_no,
+                            expect_client: false,
+                            authen_type: Some(start.authen_type),
+                            challenge: None,
+                            username: Some(start.user.clone()),
+                            chap_id: None,
+                        }),
+                        AuthenPacket::Continue(_) => AuthSessionState {
+                            last_seq: 0,
+                            expect_client: true,
+                            authen_type: None,
+                            challenge: None,
+                            username: None,
+                            chap_id: None,
+                        },
+                    });
                 if let AuthenPacket::Continue(ref cont) = packet {
                     if let Err(err) = state.validate_client(&cont.header) {
                         warn!(error = %err, peer = %peer, "auth sequence invalid");
@@ -293,111 +306,133 @@ where
                 }
 
                 let reply = match packet {
-                    AuthenPacket::Start(ref start) => {
-                        match start.authen_type {
-                            AUTHEN_TYPE_ASCII | AUTHEN_TYPE_PAP => {
-                                let data = start.parsed_data();
-                                let password = match data {
-                                    AuthenData::Pap { ref password } => password.as_str(),
-                                    _ => "",
-                                };
+                    AuthenPacket::Start(ref start) => match start.authen_type {
+                        AUTHEN_TYPE_ASCII | AUTHEN_TYPE_PAP => {
+                            let data = start.parsed_data();
+                            let password = match data {
+                                AuthenData::Pap { ref password } => password.as_str(),
+                                _ => "",
+                            };
+                            AuthenReply {
+                                status: if verify_pap(&start.user, password, &credentials) {
+                                    AUTHEN_STATUS_PASS
+                                } else {
+                                    AUTHEN_STATUS_FAIL
+                                },
+                                flags: 0,
+                                server_msg: String::new(),
+                                data: Vec::new(),
+                            }
+                        }
+                        AUTHEN_TYPE_CHAP => {
+                            let chal_len = if start.authen_type == AUTHEN_TYPE_CHAP {
+                                16
+                            } else {
+                                8
+                            };
+                            let mut chal = vec![0u8; chal_len];
+                            let mut chap_id = [0u8; 1];
+                            if rand_bytes(&mut chal).is_err() || rand_bytes(&mut chap_id).is_err() {
                                 AuthenReply {
-                                    status: if verify_pap(&start.user, password, &credentials) {
-                                        AUTHEN_STATUS_PASS
-                                    } else {
-                                        AUTHEN_STATUS_FAIL
-                                    },
+                                    status: AUTHEN_STATUS_ERROR,
+                                    flags: 0,
+                                    server_msg: "failed to generate challenge".into(),
+                                    data: Vec::new(),
+                                }
+                            } else {
+                                state.challenge = Some(chal.clone());
+                                state.chap_id = Some(chap_id[0]);
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_GETDATA,
                                     flags: 0,
                                     server_msg: String::new(),
-                                    data: String::new(),
+                                    data: {
+                                        let mut payload = Vec::with_capacity(1 + chal_len);
+                                        payload.extend_from_slice(&chap_id);
+                                        payload.extend_from_slice(&chal);
+                                        payload
+                                    },
                                 }
                             }
-                            AUTHEN_TYPE_CHAP => {
-                                let chal_len = if start.authen_type == AUTHEN_TYPE_CHAP {
-                                    16
-                                } else {
-                                    8
-                                };
-                                let mut chal = vec![0u8; chal_len];
-                                if rand_bytes(&mut chal).is_err() {
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_ERROR,
-                                        flags: 0,
-                                        server_msg: "failed to generate challenge".into(),
-                                        data: String::new(),
-                                    }
-                                } else {
-                                    state.challenge = Some(chal.clone());
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_GETDATA,
-                                        flags: 0,
-                                        server_msg: String::new(),
-                                        data: hex::encode(chal),
-                                    }
-                                }
-                            }
-                            AUTHEN_TYPE_ARAP => AuthenReply {
-                                status: AUTHEN_STATUS_FAIL,
-                                flags: 0,
-                                server_msg: "ARAP authentication not supported".into(),
-                                data: String::new(),
-                            },
-                            _ => AuthenReply {
-                                status: AUTHEN_STATUS_FOLLOW,
-                                flags: 0,
-                                server_msg: "unsupported auth type - fallback".into(),
-                                data: String::new(),
-                            },
                         }
-                    }
+                        AUTHEN_TYPE_ARAP => AuthenReply {
+                            status: AUTHEN_STATUS_FAIL,
+                            flags: 0,
+                            server_msg: "ARAP authentication not supported".into(),
+                            data: Vec::new(),
+                        },
+                        _ => AuthenReply {
+                            status: AUTHEN_STATUS_FOLLOW,
+                            flags: 0,
+                            server_msg: "unsupported auth type - fallback".into(),
+                            data: Vec::new(),
+                        },
+                    },
                     AuthenPacket::Continue(ref cont) => {
                         if state.challenge.is_some() {
                             let user = state.username.clone().unwrap_or_default();
                             match state.authen_type {
-                        Some(AUTHEN_TYPE_CHAP) => {
-                            if let Some(expected) = compute_chap_response(
-                                &user,
-                                &credentials,
-                                cont.data.as_slice(),
-                                state.challenge.as_ref().unwrap(),
-                            ) {
-                                state.challenge = None;
-                                if expected {
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_PASS,
-                                        flags: 0,
-                                        server_msg: String::new(),
-                                        data: String::new(),
-                                    }
-                                } else {
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_FAIL,
-                                        flags: 0,
-                                        server_msg: "invalid CHAP response".into(),
-                                        data: String::new(),
+                                Some(AUTHEN_TYPE_CHAP) => {
+                                    if cont.data.len() != 1 + 16 {
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_ERROR,
+                                            flags: 0,
+                                            server_msg: "invalid CHAP continue length".into(),
+                                            data: Vec::new(),
+                                        }
+                                    } else if state.chap_id.is_some()
+                                        && cont.data[0] != state.chap_id.unwrap()
+                                    {
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_FAIL,
+                                            flags: 0,
+                                            server_msg: "CHAP identifier mismatch".into(),
+                                            data: Vec::new(),
+                                        }
+                                    } else if let Some(expected) = compute_chap_response(
+                                        &user,
+                                        &credentials,
+                                        cont.data.as_slice(),
+                                        state.challenge.as_ref().unwrap(),
+                                    ) {
+                                        state.challenge = None;
+                                        state.chap_id = None;
+                                        if expected {
+                                            AuthenReply {
+                                                status: AUTHEN_STATUS_PASS,
+                                                flags: 0,
+                                                server_msg: String::new(),
+                                                data: Vec::new(),
+                                            }
+                                        } else {
+                                            AuthenReply {
+                                                status: AUTHEN_STATUS_FAIL,
+                                                flags: 0,
+                                                server_msg: "invalid CHAP response".into(),
+                                                data: Vec::new(),
+                                            }
+                                        }
+                                    } else {
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_ERROR,
+                                            flags: 0,
+                                            server_msg: "missing credentials".into(),
+                                            data: Vec::new(),
+                                        }
                                     }
                                 }
-                            } else {
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_ERROR,
+                                Some(AUTHEN_TYPE_ARAP) => AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
-                                    server_msg: "missing credentials".into(),
-                                    data: String::new(),
-                                }
-                            }
-                        }
-                        Some(AUTHEN_TYPE_ARAP) => AuthenReply {
-                            status: AUTHEN_STATUS_FAIL,
-                            flags: 0,
-                            server_msg: "ARAP authentication not supported".into(),
-                            data: String::new(),
-                        },
-                        _ => AuthenReply {
-                            status: AUTHEN_STATUS_FAIL,
-                            flags: 0,
-                            server_msg: "unexpected continue".into(),
-                            data: String::new(),
-                        },
+                                    server_msg: "ARAP authentication not supported".into(),
+                                    data: Vec::new(),
+                                },
+                                _ => AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: "unexpected continue".into(),
+                                    data: Vec::new(),
+                                },
                             }
                         } else {
                             AuthenReply {
@@ -407,7 +442,7 @@ where
                                     "unexpected authentication continue (flags {:02x})",
                                     cont.flags
                                 ),
-                                data: String::new(),
+                                data: Vec::new(),
                             }
                         }
                     }
@@ -421,9 +456,14 @@ where
                     warn!(error = %err, peer = %peer, "auth reply sequence invalid");
                 }
 
-                write_authen_reply(&mut stream, header, &reply, secret.as_deref().map(|s| s.as_slice()))
-                    .await
-                    .with_context(|| "sending TACACS+ auth reply")?;
+                write_authen_reply(
+                    &mut stream,
+                    header,
+                    &reply,
+                    secret.as_deref().map(|s| s.as_slice()),
+                )
+                .await
+                .with_context(|| "sending TACACS+ auth reply")?;
             }
             Ok(Some(Packet::Accounting(request))) => {
                 if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {

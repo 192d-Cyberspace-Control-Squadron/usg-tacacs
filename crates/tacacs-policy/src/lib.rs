@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use jsonschema::{Draft, JSONSchema};
 use regex::Regex;
 use serde::Deserialize;
@@ -77,9 +77,8 @@ impl PolicyEngine {
         let mut rules = Vec::with_capacity(document.rules.len());
 
         for (order, rule) in document.rules.into_iter().enumerate() {
-            let regex = compile_pattern(&rule.pattern).with_context(|| {
-                format!("compiling rule {} pattern {}", rule.id, rule.pattern)
-            })?;
+            let regex = compile_pattern(&rule.pattern)
+                .with_context(|| format!("compiling rule {} pattern {}", rule.id, rule.pattern))?;
             let users = rule
                 .users
                 .into_iter()
@@ -150,8 +149,8 @@ pub fn validate_policy_file(
     schema: impl AsRef<Path>,
 ) -> Result<PolicyDocument> {
     let path = policy.as_ref();
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("reading policy {}", path.display()))?;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("reading policy {}", path.display()))?;
     let value: Value = serde_json::from_str(&contents)
         .with_context(|| format!("parsing JSON policy {}", path.display()))?;
     validate_against_schema(&value, schema.as_ref())?;
@@ -193,12 +192,10 @@ fn validate_against_schema(value: &Value, schema_path: &Path) -> Result<()> {
         .compile(&schema_json)
         .map_err(|err| anyhow!("compiling schema {}: {err}", schema_path.display()))?;
 
-    compiled
-        .validate(value)
-        .map_err(|errors| {
-            let messages: Vec<String> = errors.map(|e| e.to_string()).collect();
-            anyhow!("policy failed schema validation: {}", messages.join("; "))
-        })
+    compiled.validate(value).map_err(|errors| {
+        let messages: Vec<String> = errors.map(|e| e.to_string()).collect();
+        anyhow!("policy failed schema validation: {}", messages.join("; "))
+    })
 }
 
 #[cfg(test)]

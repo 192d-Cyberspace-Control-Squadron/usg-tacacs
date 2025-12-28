@@ -2,8 +2,8 @@
 //! Minimal client-side helpers to read validated TACACS+ responses.
 
 use crate::{
-    read_accounting_response, read_authen_reply, read_author_response, AccountingResponse,
-    AuthenReply, AuthorizationResponse,
+    AccountingResponse, AuthenReply, AuthorizationResponse, read_accounting_response,
+    read_authen_reply, read_author_response,
 };
 use anyhow::Result;
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! TACACS+ packet header parsing and serialization for async streams.
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone)]

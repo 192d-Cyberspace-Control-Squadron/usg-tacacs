@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::PathBuf;
 use tokio_rustls::rustls::{
-    self,
+    self, RootCertStore,
     pki_types::{CertificateDer, PrivateKeyDer},
     server::WebPkiClientVerifier,
-    RootCertStore,
 };
 
 pub fn build_tls_config(

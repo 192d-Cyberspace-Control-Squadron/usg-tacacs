@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! TACACS+ shared-secret body obfuscation (MD5 pad).
 
-use crate::header::Header;
 use crate::FLAG_UNENCRYPTED;
+use crate::header::Header;
 #[cfg(not(feature = "legacy-md5"))]
 use anyhow::bail;
-use anyhow::{anyhow, Result, bail};
-#[cfg(feature = "legacy-md5")]
-use openssl::hash::hash;
+use anyhow::{Result, anyhow, bail};
 #[cfg(feature = "legacy-md5")]
 use openssl::hash::MessageDigest;
+#[cfg(feature = "legacy-md5")]
+use openssl::hash::hash;
 use std::convert::TryInto;
 
 pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>) -> Result<()> {
@@ -19,7 +19,10 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
 
     let secret = secret.ok_or_else(|| anyhow!("encrypted TACACS+ body but no secret provided"))?;
     if secret.len() < crate::MIN_SECRET_LEN {
-        bail!("shared secret too short; minimum {} bytes required", crate::MIN_SECRET_LEN);
+        bail!(
+            "shared secret too short; minimum {} bytes required",
+            crate::MIN_SECRET_LEN
+        );
     }
 
     #[cfg(not(feature = "legacy-md5"))]

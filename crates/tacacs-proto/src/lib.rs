@@ -3,19 +3,19 @@
 //! Focused on async IO parsing/encoding for server-side use.
 //! The `legacy-md5` feature (on by default) enables the TACACS+ MD5 body obfuscation; disable it for FIPS-only builds.
 
-use anyhow::{Context, Result, bail, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod accounting;
 mod authen;
 mod author;
+pub mod client;
 mod crypto;
 pub mod header;
-pub mod client;
 mod util;
 
 pub use accounting::{AccountingRequest, AccountingResponse};
-pub use authen::{AuthenData, AuthenPacket, AuthenReply, AuthSessionState};
+pub use authen::{AuthSessionState, AuthenData, AuthenPacket, AuthenReply};
 pub use author::{AuthorizationRequest, AuthorizationResponse};
 pub use header::Header;
 
@@ -89,13 +89,7 @@ where
             }
         }
     }
-    header::validate_request_header(
-        &header,
-        None,
-        ALLOWED_FLAGS,
-        true,
-        VERSION >> 4,
-    )?;
+    header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
 
     let mut body = vec![0u8; header.length as usize];
     reader
@@ -246,13 +240,7 @@ where
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32);
-    header::validate_response_header(
-        &header,
-        Some(TYPE_ACCT),
-        ALLOWED_FLAGS,
-        true,
-        VERSION >> 4,
-    )?;
+    header::validate_response_header(&header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)?;
     header::write_header(writer, &header).await?;
     writer
         .write_all(&body)
@@ -355,23 +343,11 @@ where
 }
 
 pub fn validate_author_response_header(header: &Header) -> Result<()> {
-    header::validate_response_header(
-        header,
-        Some(TYPE_AUTHOR),
-        ALLOWED_FLAGS,
-        true,
-        VERSION >> 4,
-    )
+    header::validate_response_header(header, Some(TYPE_AUTHOR), ALLOWED_FLAGS, true, VERSION >> 4)
 }
 
 pub fn validate_accounting_response_header(header: &Header) -> Result<()> {
-    header::validate_response_header(
-        header,
-        Some(TYPE_ACCT),
-        ALLOWED_FLAGS,
-        true,
-        VERSION >> 4,
-    )
+    header::validate_response_header(header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)
 }
 
 pub async fn read_accounting_response<R>(

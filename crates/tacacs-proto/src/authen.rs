@@ -3,9 +3,9 @@
 
 use crate::header::Header;
 use crate::util::read_bytes;
+use crate::{AUTHEN_TYPE_ARAP, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP};
 use anyhow::{Context, Result, ensure};
 use bytes::{BufMut, BytesMut};
-use crate::{AUTHEN_TYPE_ARAP, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP};
 
 #[derive(Debug, Clone)]
 pub struct AuthenStart {
@@ -33,7 +33,7 @@ pub struct AuthenReply {
     pub status: u8,
     pub flags: u8,
     pub server_msg: String,
-    pub data: String,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,9 +44,17 @@ pub enum AuthenPacket {
 
 #[derive(Debug, Clone)]
 pub enum AuthenData {
-    Pap { password: String },
-    Chap { chap_id: u8, response: Vec<u8> },
-    Arap { challenge: Vec<u8>, response: Vec<u8> },
+    Pap {
+        password: String,
+    },
+    Chap {
+        chap_id: u8,
+        response: Vec<u8>,
+    },
+    Arap {
+        challenge: Vec<u8>,
+        response: Vec<u8>,
+    },
     Raw(Vec<u8>),
 }
 
@@ -57,6 +65,7 @@ pub struct AuthSessionState {
     pub authen_type: Option<u8>,
     pub challenge: Option<Vec<u8>>,
     pub username: Option<String>,
+    pub chap_id: Option<u8>,
 }
 
 impl AuthSessionState {
@@ -68,6 +77,7 @@ impl AuthSessionState {
             authen_type: Some(authen_type),
             challenge: None,
             username: Some(username),
+            chap_id: None,
         })
     }
 
@@ -176,7 +186,7 @@ pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
     buf.put_u16(reply.server_msg.len() as u16);
     buf.put_u16(reply.data.len() as u16);
     buf.extend_from_slice(reply.server_msg.as_bytes());
-    buf.extend_from_slice(reply.data.as_bytes());
+    buf.extend_from_slice(&reply.data);
     Ok(buf.to_vec())
 }
 
@@ -187,11 +197,13 @@ pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {
     let msg_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let data_len = u16::from_be_bytes([body[4], body[5]]) as usize;
     let expected = 6 + msg_len + data_len;
-    ensure!(expected <= body.len(), "authentication reply exceeds body length");
+    ensure!(
+        expected <= body.len(),
+        "authentication reply exceeds body length"
+    );
     let server_msg = String::from_utf8(body[6..6 + msg_len].to_vec())
         .context("decoding authen reply server_msg")?;
-    let data = String::from_utf8(body[6 + msg_len..expected].to_vec())
-        .context("decoding authen reply data")?;
+    let data = body[6 + msg_len..expected].to_vec();
 
     Ok(AuthenReply {
         status,

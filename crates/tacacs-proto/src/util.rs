@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Shared parsing utilities for TACACS+ packet bodies.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 pub fn read_bytes(body: &[u8], offset: usize, len: usize, label: &str) -> Result<(Vec<u8>, usize)> {
     let next = offset
@@ -55,7 +55,10 @@ pub fn validate_attributes(args: &[String], allowed_prefixes: &[&str]) -> Result
         if name.is_empty() || value.is_empty() {
             return Err(anyhow!("attr[{idx}] must be name=value"));
         }
-        if !allowed_prefixes.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+        if !allowed_prefixes
+            .iter()
+            .any(|p| name.eq_ignore_ascii_case(p))
+        {
             return Err(anyhow!("attr[{idx}] uses unsupported name '{}'", name));
         }
         if arg.len() > 255 {
