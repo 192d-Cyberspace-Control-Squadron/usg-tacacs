@@ -210,10 +210,30 @@ where
     use std::collections::HashMap;
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect_user: Option<String> = None;
+    let mut single_connect_active = false;
     loop {
         match read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice())).await {
             Ok(Some(Packet::Authorization(request))) => {
-                if request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0 {
+                let authz_single =
+                    request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
+                if single_connect_active && !authz_single {
+                    let response = AuthorizationResponse {
+                        status: AUTHOR_STATUS_ERROR,
+                        server_msg: "single-connection flag required after authentication"
+                            .to_string(),
+                        data: String::new(),
+                        args: Vec::new(),
+                    };
+                    let _ = write_author_response(
+                        &mut stream,
+                        &request.header,
+                        &response,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    continue;
+                }
+                if authz_single {
                     if let Some(ref bound_user) = single_connect_user {
                         if bound_user != &request.user {
                             let response = AuthorizationResponse {
@@ -319,6 +339,48 @@ where
                         cont.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
                     }
                 };
+                if single_connect_active && !single_connect {
+                    let header = match &packet {
+                        AuthenPacket::Start(start) => &start.header,
+                        AuthenPacket::Continue(cont) => &cont.header,
+                    };
+                    let reply = AuthenReply {
+                        status: AUTHEN_STATUS_ERROR,
+                        flags: 0,
+                        server_msg: "single-connection flag required after authentication".into(),
+                        data: Vec::new(),
+                    };
+                    let _ = write_authen_reply(
+                        &mut stream,
+                        header,
+                        &reply,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    continue;
+                }
+                if let AuthenPacket::Start(start) = &packet {
+                    if single_connect_active {
+                        if let Some(ref bound_user) = single_connect_user {
+                            if bound_user != &start.user {
+                                let reply = AuthenReply {
+                                    status: AUTHEN_STATUS_ERROR,
+                                    flags: 0,
+                                    server_msg: "single-connection user mismatch".into(),
+                                    data: Vec::new(),
+                                };
+                                let _ = write_authen_reply(
+                                    &mut stream,
+                                    &start.header,
+                                    &reply,
+                                    secret.as_deref().map(|s| s.as_slice()),
+                                )
+                                .await;
+                                continue;
+                            }
+                        }
+                    }
+                }
                 let state = auth_states
                     .entry(session_id)
                     .or_insert_with(|| match &packet {
@@ -613,15 +675,38 @@ where
                 .with_context(|| "sending TACACS+ auth reply")?;
                 if terminal {
                     auth_states.remove(&session_id);
+                    if reply.status != AUTHEN_STATUS_PASS {
+                        single_connect_active = false;
+                        single_connect_user = None;
+                    }
                 }
                 if matches!(reply.status, AUTHEN_STATUS_PASS) && single_connect {
                     if let Some(user) = single_user {
                         single_connect_user = Some(user);
+                        single_connect_active = true;
                     }
                 }
             }
             Ok(Some(Packet::Accounting(request))) => {
-                if request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0 {
+                let acct_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
+                if single_connect_active && !acct_single {
+                    let response = AccountingResponse {
+                        status: ACCT_STATUS_ERROR,
+                        server_msg: "single-connection flag required after authentication"
+                            .to_string(),
+                        data: String::new(),
+                        args: Vec::new(),
+                    };
+                    let _ = write_accounting_response(
+                        &mut stream,
+                        &request.header,
+                        &response,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    continue;
+                }
+                if acct_single {
                     if let Some(ref bound_user) = single_connect_user {
                         if bound_user != &request.user {
                             let response = AccountingResponse {
