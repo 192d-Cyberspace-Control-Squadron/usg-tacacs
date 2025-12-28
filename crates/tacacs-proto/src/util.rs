@@ -43,3 +43,24 @@ pub fn parse_attributes(args: &[String]) -> Vec<Attribute> {
         })
         .collect()
 }
+
+pub fn validate_attributes(args: &[String], allowed_prefixes: &[&str]) -> Result<()> {
+    for (idx, arg) in args.iter().enumerate() {
+        if arg.is_empty() {
+            return Err(anyhow!("attr[{idx}] is empty"));
+        }
+        let mut parts = arg.splitn(2, '=');
+        let name = parts.next().unwrap_or("");
+        let value = parts.next().unwrap_or("");
+        if name.is_empty() || value.is_empty() {
+            return Err(anyhow!("attr[{idx}] must be name=value"));
+        }
+        if !allowed_prefixes.iter().any(|p| name.eq_ignore_ascii_case(p)) {
+            return Err(anyhow!("attr[{idx}] uses unsupported name '{}'", name));
+        }
+        if arg.len() > 255 {
+            return Err(anyhow!("attr[{idx}] exceeds 255 bytes"));
+        }
+    }
+    Ok(())
+}

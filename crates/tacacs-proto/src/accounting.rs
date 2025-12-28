@@ -2,7 +2,7 @@
 //! TACACS+ accounting packet structures plus parsing/encoding helpers.
 
 use crate::header::Header;
-use crate::util::{parse_attributes, read_string};
+use crate::util::{parse_attributes, read_string, validate_attributes};
 use crate::{ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG};
 use anyhow::{Result, anyhow, ensure};
 use bytes::{BufMut, BytesMut};
@@ -74,6 +74,11 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
         cursor = next_cursor;
         args.push(arg);
     }
+
+    validate_attributes(
+        &args,
+        &["cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl", "task_id"],
+    )?;
 
     Ok(AccountingRequest {
         header,

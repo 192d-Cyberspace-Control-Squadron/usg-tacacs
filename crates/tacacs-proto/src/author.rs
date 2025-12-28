@@ -3,6 +3,7 @@
 
 use crate::header::Header;
 use crate::util::{parse_attributes, read_string};
+use crate::util::validate_attributes;
 use anyhow::{anyhow, ensure, Result};
 use bytes::{BufMut, BytesMut};
 
@@ -115,6 +116,12 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
         cursor = next_cursor;
         args.push(arg);
     }
+
+    // Basic TACACS+ attr validation: require name=value, known prefixes, non-empty.
+    validate_attributes(
+        &args,
+        &["cmd", "cmd-arg", "service", "protocol", "acl", "addr", "priv-lvl"],
+    )?;
 
     Ok(AuthorizationRequest {
         header,
