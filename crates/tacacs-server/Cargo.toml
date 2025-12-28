@@ -16,3 +16,5 @@ rustls = "0.22"
 rustls-pemfile = "2"
 usg-tacacs-policy = { path = "../tacacs-policy" }
 usg-tacacs-proto = { path = "../tacacs-proto" }
+openssl = "0.10"
+hex = "0.4"
