@@ -578,8 +578,9 @@ where
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
                             if cont.flags & AUTHEN_CONT_ABORT != 0 {
-                                state.ascii_need_user = false;
+                                state.ascii_need_user = true;
                                 state.ascii_need_pass = false;
+                                state.username = None;
                                 AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
@@ -587,62 +588,52 @@ where
                                     data: Vec::new(),
                                 }
                             } else if state.ascii_need_user {
-                                match String::from_utf8(cont.data.clone()) {
-                                    Ok(username) if !username.is_empty() => {
-                                        state.username = Some(username);
-                                        state.ascii_need_user = false;
-                                        state.ascii_need_pass = true;
-                                        AuthenReply {
-                                            status: AUTHEN_STATUS_GETPASS,
-                                            flags: AUTHEN_FLAG_NOECHO,
-                                            server_msg: "Password:".into(),
-                                            data: Vec::new(),
-                                        }
+                                let username = String::from_utf8_lossy(&cont.data).to_string();
+                                if !username.is_empty() {
+                                    state.username = Some(username);
+                                    state.ascii_need_user = false;
+                                    state.ascii_need_pass = true;
+                                    AuthenReply {
+                                        status: AUTHEN_STATUS_GETPASS,
+                                        flags: AUTHEN_FLAG_NOECHO,
+                                        server_msg: "Password:".into(),
+                                        data: Vec::new(),
                                     }
-                                    _ => AuthenReply {
+                                } else {
+                                    AuthenReply {
                                         status: AUTHEN_STATUS_GETUSER,
                                         flags: 0,
                                         server_msg: "Username:".into(),
                                         data: Vec::new(),
-                                    },
+                                    }
                                 }
                             } else if state.ascii_need_pass {
-                                match String::from_utf8(cont.data.clone()) {
-                                    Ok(password) => {
-                                        if password.is_empty() {
-                                            AuthenReply {
-                                                status: AUTHEN_STATUS_GETPASS,
-                                                flags: AUTHEN_FLAG_NOECHO,
-                                                server_msg: "Password:".into(),
-                                                data: Vec::new(),
-                                            }
-                                        } else {
-                                            state.ascii_need_pass = false;
-                                            let user = state.username.clone().unwrap_or_default();
-                                            AuthenReply {
-                                                status: if verify_pap(
-                                                    &user,
-                                                    &password,
-                                                    &credentials,
-                                                ) {
-                                                    AUTHEN_STATUS_PASS
-                                                } else {
-                                                    AUTHEN_STATUS_FAIL
-                                                },
-                                                flags: 0,
-                                                server_msg: String::new(),
-                                                data: Vec::new(),
-                                            }
-                                        }
-                                    }
-                                    Err(_) => AuthenReply {
-                                        status: AUTHEN_STATUS_ERROR,
-                                        flags: 0,
-                                        server_msg: "invalid ASCII input".into(),
+                                let password = String::from_utf8_lossy(&cont.data).to_string();
+                                if password.is_empty() {
+                                    AuthenReply {
+                                        status: AUTHEN_STATUS_GETPASS,
+                                        flags: AUTHEN_FLAG_NOECHO,
+                                        server_msg: "Password:".into(),
                                         data: Vec::new(),
-                                    },
+                                    }
+                                } else {
+                                    state.ascii_need_pass = false;
+                                    let user = state.username.clone().unwrap_or_default();
+                                    AuthenReply {
+                                        status: if verify_pap(&user, &password, &credentials) {
+                                            AUTHEN_STATUS_PASS
+                                        } else {
+                                            AUTHEN_STATUS_FAIL
+                                        },
+                                        flags: 0,
+                                        server_msg: String::new(),
+                                        data: Vec::new(),
+                                    }
                                 }
                             } else {
+                                state.ascii_need_user = true;
+                                state.ascii_need_pass = false;
+                                state.username = None;
                                 AuthenReply {
                                     status: AUTHEN_STATUS_RESTART,
                                     flags: 0,
