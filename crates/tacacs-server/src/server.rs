@@ -141,6 +141,13 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         return Ok(());
     }
 
+    let protocol_count = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
+        .count();
+    if protocol_count > 1 {
+        return Err("authorization must include at most one protocol attribute");
+    }
     if cmd_attrs.len() != 1 {
         return Err("authorization must include exactly one cmd attribute");
     }
@@ -152,6 +159,36 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .any(|a| a.value.as_deref().unwrap_or("").is_empty())
     {
         return Err("cmd-arg attributes must have values");
+    }
+    // Enforce service attribute appears before command attributes in the arg list.
+    let service_pos = req
+        .args
+        .iter()
+        .position(|a| a.to_lowercase().starts_with("service="))
+        .unwrap_or(0);
+    let cmd_positions = req
+        .args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
+        .map(|(i, _)| i);
+    if cmd_positions.clone().any(|i| i < service_pos) {
+        return Err("service attribute must precede command attributes");
+    }
+    // Optional priv-lvl attribute must be numeric and match header priv.
+    if let Some(attr) = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
+    {
+        if let Some(val) = attr.value.as_deref() {
+            let parsed: u32 = val.parse().map_err(|_| "priv-lvl must be numeric")?;
+            if parsed > 0x0f {
+                return Err("priv-lvl must be 0-15");
+            }
+            if parsed as u8 != req.priv_lvl {
+                return Err("priv-lvl attribute must match header priv_lvl");
+            }
+        }
     }
     Ok(())
 }
