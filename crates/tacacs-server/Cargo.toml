@@ -2,9 +2,17 @@
 name = "usg-tacacs-server"
 version = "0.1.0"
 edition = "2024"
+license = "AGPL-3.0-only"
+license-file = "LICENSE"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
+clap = { version = "4", features = ["derive"] }
+tokio-rustls = "0.26"
+rustls = "0.22"
+rustls-pemfile = "2"
+usg-tacacs-policy = { path = "../tacacs-policy" }
+usg-tacacs-proto = { path = "../tacacs-proto" }
