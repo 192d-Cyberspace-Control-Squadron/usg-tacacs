@@ -3,7 +3,7 @@
 
 use crate::header::Header;
 use crate::util::read_bytes;
-use crate::{AUTHEN_TYPE_ARAP, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP};
+use crate::{AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP};
 use anyhow::{Context, Result, ensure};
 use bytes::{BufMut, BytesMut};
 
@@ -44,17 +44,8 @@ pub enum AuthenPacket {
 
 #[derive(Debug, Clone)]
 pub enum AuthenData {
-    Pap {
-        password: String,
-    },
-    Chap {
-        chap_id: u8,
-        response: Vec<u8>,
-    },
-    Arap {
-        challenge: Vec<u8>,
-        response: Vec<u8>,
-    },
+    Pap { password: String },
+    Chap { chap_id: u8, response: Vec<u8> },
     Raw(Vec<u8>),
 }
 
@@ -116,10 +107,6 @@ impl AuthenStart {
             AUTHEN_TYPE_CHAP if self.data.len() >= 2 => AuthenData::Chap {
                 chap_id: self.data[0],
                 response: self.data[1..].to_vec(),
-            },
-            AUTHEN_TYPE_ARAP if self.data.len() >= 16 => AuthenData::Arap {
-                challenge: self.data[..8].to_vec(),
-                response: self.data[8..16].to_vec(),
             },
             _ => AuthenData::Raw(self.data.clone()),
         }
