@@ -17,11 +17,12 @@ use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
     ACCT_STATUS_SUCCESS, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL,
     AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER,
-    AUTHEN_STATUS_PASS, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR,
-    AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AccountingResponse, AuthSessionState, AuthenData,
-    AuthenPacket, AuthenReply, AuthorizationResponse, Packet, read_packet,
-    validate_accounting_response_header, validate_author_response_header,
-    write_accounting_response, write_authen_reply, write_author_response,
+    AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP,
+    AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD,
+    AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
+    AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
+    validate_author_response_header, write_accounting_response, write_authen_reply,
+    write_author_response,
 };
 
 #[tokio::main]
@@ -556,6 +557,16 @@ where
                 )
                 .await
                 .with_context(|| "sending TACACS+ auth reply")?;
+                if matches!(
+                    reply.status,
+                    AUTHEN_STATUS_PASS
+                        | AUTHEN_STATUS_FAIL
+                        | AUTHEN_STATUS_ERROR
+                        | AUTHEN_STATUS_FOLLOW
+                        | AUTHEN_STATUS_RESTART
+                ) {
+                    auth_states.remove(&session_id);
+                }
             }
             Ok(Some(Packet::Accounting(request))) => {
                 if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
