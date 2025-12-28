@@ -29,9 +29,10 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
     AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL,
     AccountingRequest, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
-    AuthorizationRequest, AuthorizationResponse, Packet, read_packet,
-    validate_accounting_response_header, validate_author_response_header,
-    write_accounting_response, write_authen_reply, write_author_response,
+    AuthorizationRequest, AuthorizationResponse, CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE,
+    Capability, Packet, read_packet, validate_accounting_response_header,
+    validate_author_response_header, write_accounting_response, write_authen_reply,
+    write_author_response,
 };
 
 fn audit_event(
@@ -97,6 +98,7 @@ fn authz_context(req: &AuthorizationRequest) -> String {
 
 fn authz_allow_attrs(req: &AuthorizationRequest) -> Vec<String> {
     let mut out = Vec::new();
+    out.push(format!("priv-lvl={}", req.priv_lvl));
     let attrs = req.attributes();
     if let Some(service) = attrs
         .iter()
@@ -126,6 +128,24 @@ fn authz_allow_attrs(req: &AuthorizationRequest) -> Vec<String> {
         }
     }
     out
+}
+
+fn ensure_priv_attr(mut args: Vec<String>, priv_lvl: u8) -> Vec<String> {
+    if !args
+        .iter()
+        .any(|a| a.to_lowercase().starts_with("priv-lvl="))
+    {
+        args.insert(0, format!("priv-lvl={priv_lvl}"));
+    }
+    args
+}
+
+fn authz_server_msg_with_detail(code: &str, msg: &str, detail: &str) -> String {
+    if detail.is_empty() {
+        format!("{code}: {msg}")
+    } else {
+        format!("{code}: {msg} ({detail})")
+    }
 }
 
 fn acct_attr<'a>(args: &'a [String], name: &str) -> &'a str {
@@ -169,32 +189,35 @@ fn accounting_success_response(req: &AccountingRequest) -> AccountingResponse {
     }
 }
 
-fn authz_semantic_detail(msg: &str) -> (&'static str, String) {
-    match msg {
-        "authorization must include exactly one service attribute" => {
-            ("service-missing", msg.to_string())
-        }
-        "authorization service attribute must have a value" => ("service-empty", msg.to_string()),
-        "shell authorization requires protocol attribute" => {
-            ("shell-protocol-missing", msg.to_string())
-        }
-        "shell authorization must not include cmd/cmd-arg attributes" => {
-            ("shell-cmd-invalid", msg.to_string())
-        }
-        "authorization must include at most one protocol attribute" => {
-            ("protocol-count", msg.to_string())
-        }
-        "authorization must include exactly one cmd attribute" => ("cmd-missing", msg.to_string()),
-        "cmd attribute must have a value" => ("cmd-empty", msg.to_string()),
-        "cmd-arg attributes must have values" => ("cmd-arg-empty", msg.to_string()),
-        "service attribute must precede command attributes" => ("service-order", msg.to_string()),
-        "service attribute must precede protocol attributes" => ("service-order", msg.to_string()),
-        "authorization service attribute value unknown" => ("service-unknown", msg.to_string()),
-        "priv-lvl must be numeric" => ("priv-nan", msg.to_string()),
-        "priv-lvl must be 0-15" => ("priv-range", msg.to_string()),
-        "priv-lvl attribute must match header priv_lvl" => ("priv-mismatch", msg.to_string()),
-        _ => ("semantic-invalid", msg.to_string()),
+fn authz_semantic_detail(err: &AuthzSemanticError) -> (&'static str, String) {
+    let msg = err.msg;
+    let mut detail = msg.to_string();
+    if let Some(idx) = err.offending_index {
+        detail.push_str(&format!(";index={idx}"));
     }
+    let code = match msg {
+        "authorization must include exactly one service attribute" => "service-missing",
+        "authorization service attribute must have a value" => "service-empty",
+        "shell authorization requires protocol attribute" => "shell-protocol-missing",
+        "shell authorization must not include cmd/cmd-arg attributes" => "shell-cmd-invalid",
+        "authorization must include at most one protocol attribute" => "protocol-count",
+        "authorization must include exactly one cmd attribute" => "cmd-missing",
+        "cmd attribute must have a value" => "cmd-empty",
+        "cmd-arg attributes must have values" => "cmd-arg-empty",
+        "service attribute must precede command attributes" => "service-order",
+        "service attribute must precede protocol attributes" => "service-order",
+        "authorization service attribute value unknown" => "service-unknown",
+        "authorization must include exactly one cmd attribute for non-shell services" => {
+            "cmd-missing"
+        }
+        "authorization protocol attribute must have a value" => "protocol-empty",
+        "authorization protocol attribute value unknown" => "protocol-unknown",
+        "priv-lvl must be numeric" => "priv-nan",
+        "priv-lvl must be 0-15" => "priv-range",
+        "priv-lvl attribute must match header priv_lvl" => "priv-mismatch",
+        _ => "semantic-invalid",
+    };
+    (code, detail)
 }
 
 fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static str> {
@@ -243,6 +266,9 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     let parse_u32 = |key: &str| -> Result<Option<u32>, &'static str> {
         if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
             let val = attr.value.as_deref().unwrap_or("");
+            if key.eq_ignore_ascii_case("status") && val.eq_ignore_ascii_case("follow") {
+                return Err("accounting FOLLOW status deprecated and rejected");
+            }
             let parsed: u32 = val
                 .parse()
                 .map_err(|_| "accounting attributes must be numeric where required")?;
@@ -275,34 +301,35 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     Ok(())
 }
 
-fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'static str> {
+struct AuthzSemanticError {
+    msg: &'static str,
+    offending_index: Option<usize>,
+}
+
+fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), AuthzSemanticError> {
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
         .iter()
         .filter(|a| a.name.eq_ignore_ascii_case("service"))
         .collect();
     if service_attrs.len() != 1 {
-        return Err("authorization must include exactly one service attribute");
+        return Err(AuthzSemanticError {
+            msg: "authorization must include exactly one service attribute",
+            offending_index: None,
+        });
     }
     let service_val = service_attrs[0].value.as_deref().unwrap_or("");
     if service_val.is_empty() {
-        return Err("authorization service attribute must have a value");
+        return Err(AuthzSemanticError {
+            msg: "authorization service attribute must have a value",
+            offending_index: None,
+        });
     }
-    let allowed_services = [
-        "shell",
-        "login",
-        "enable",
-        "ppp",
-        "arap",
-        "tty-daemon",
-        "connection",
-        "none",
-    ];
-    if !allowed_services
-        .iter()
-        .any(|s| service_val.eq_ignore_ascii_case(s))
-    {
-        return Err("authorization service attribute value unknown");
+    if !usg_tacacs_proto::header::is_known_service(service_val) {
+        return Err(AuthzSemanticError {
+            msg: "authorization service attribute value unknown",
+            offending_index: None,
+        });
     }
 
     let protocol_attr = attrs
@@ -319,10 +346,24 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
 
     if service_val.eq_ignore_ascii_case("shell") {
         if protocol_attr.is_none() {
-            return Err("shell authorization requires protocol attribute");
+            return Err(AuthzSemanticError {
+                msg: "shell authorization requires protocol attribute",
+                offending_index: None,
+            });
+        }
+        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+            if proto.is_empty() {
+                return Err(AuthzSemanticError {
+                    msg: "authorization protocol attribute must have a value",
+                    offending_index: None,
+                });
+            }
         }
         if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
-            return Err("shell authorization must not include cmd/cmd-arg attributes");
+            return Err(AuthzSemanticError {
+                msg: "shell authorization must not include cmd/cmd-arg attributes",
+                offending_index: None,
+            });
         }
         return Ok(());
     }
@@ -332,19 +373,48 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
         .count();
     if protocol_count > 1 {
-        return Err("authorization must include at most one protocol attribute");
+        return Err(AuthzSemanticError {
+            msg: "authorization must include at most one protocol attribute",
+            offending_index: None,
+        });
+    }
+    if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+        if proto.is_empty() {
+            return Err(AuthzSemanticError {
+                msg: "authorization protocol attribute must have a value",
+                offending_index: None,
+            });
+        }
+        let allowed = [
+            "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap", "none",
+        ];
+        if !allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)) {
+            return Err(AuthzSemanticError {
+                msg: "authorization protocol attribute value unknown",
+                offending_index: None,
+            });
+        }
     }
     if cmd_attrs.len() != 1 {
-        return Err("authorization must include exactly one cmd attribute");
+        return Err(AuthzSemanticError {
+            msg: "authorization must include exactly one cmd attribute for non-shell services",
+            offending_index: None,
+        });
     }
     if cmd_attrs[0].value.as_deref().unwrap_or("").is_empty() {
-        return Err("cmd attribute must have a value");
+        return Err(AuthzSemanticError {
+            msg: "cmd attribute must have a value",
+            offending_index: None,
+        });
     }
     if cmd_arg_attrs
         .iter()
         .any(|a| a.value.as_deref().unwrap_or("").is_empty())
     {
-        return Err("cmd-arg attributes must have values");
+        return Err(AuthzSemanticError {
+            msg: "cmd-arg attributes must have values",
+            offending_index: None,
+        });
     }
     // Enforce service attribute appears before command attributes in the arg list.
     let service_pos = req
@@ -359,7 +429,11 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
         .map(|(i, _)| i);
     if protocol_positions.clone().any(|i| i < service_pos) {
-        return Err("service attribute must precede protocol attributes");
+        let offending = protocol_positions.filter(|i| *i < service_pos).next();
+        return Err(AuthzSemanticError {
+            msg: "service attribute must precede protocol attributes",
+            offending_index: offending,
+        });
     }
     let cmd_positions = req
         .args
@@ -368,7 +442,11 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
         .map(|(i, _)| i);
     if cmd_positions.clone().any(|i| i < service_pos) {
-        return Err("service attribute must precede command attributes");
+        let offending = cmd_positions.filter(|i| *i < service_pos).next();
+        return Err(AuthzSemanticError {
+            msg: "service attribute must precede command attributes",
+            offending_index: offending,
+        });
     }
     // Optional priv-lvl attribute must be numeric and match header priv.
     if let Some(attr) = attrs
@@ -376,12 +454,21 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'
         .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
     {
         if let Some(val) = attr.value.as_deref() {
-            let parsed: u32 = val.parse().map_err(|_| "priv-lvl must be numeric")?;
+            let parsed: u32 = val.parse().map_err(|_| AuthzSemanticError {
+                msg: "priv-lvl must be numeric",
+                offending_index: None,
+            })?;
             if parsed > 0x0f {
-                return Err("priv-lvl must be 0-15");
+                return Err(AuthzSemanticError {
+                    msg: "priv-lvl must be 0-15",
+                    offending_index: None,
+                });
             }
             if parsed as u8 != req.priv_lvl {
-                return Err("priv-lvl attribute must match header priv_lvl");
+                return Err(AuthzSemanticError {
+                    msg: "priv-lvl attribute must match header priv_lvl",
+                    offending_index: None,
+                });
             }
         }
     }
@@ -524,6 +611,15 @@ where
     use std::collections::HashMap;
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect = SingleConnectState::default();
+    audit_event(
+        "conn_open",
+        &peer,
+        "",
+        0,
+        "info",
+        "open",
+        "connection started",
+    );
     loop {
         let read_future = read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice()));
         let keepalive_deadline = if single_connect_keepalive_secs > 0 {
@@ -539,6 +635,15 @@ where
                         peer = %peer,
                         idle_secs = keepalive_deadline,
                         "single-connect keepalive/idle timeout reached; closing"
+                    );
+                    audit_event(
+                        "conn_close",
+                        &peer,
+                        "",
+                        0,
+                        "error",
+                        "keepalive-timeout",
+                        &format!("idle_secs={keepalive_deadline}"),
                     );
                     break;
                 }
@@ -642,9 +747,16 @@ where
                         let policy = policy.read().await;
                         let ctx = authz_context(&request);
                         if request.is_shell_start() {
-                            let attrs = policy
-                                .shell_attributes_for(&request.user)
-                                .unwrap_or_default();
+                            let attrs =
+                                policy
+                                    .shell_attributes_for(&request.user)
+                                    .unwrap_or_else(|| {
+                                        vec![
+                                            "service=shell".to_string(),
+                                            "protocol=shell".to_string(),
+                                        ]
+                                    });
+                            let attrs = ensure_priv_attr(attrs, request.priv_lvl);
                             let resp = AuthorizationResponse {
                                 status: AUTHOR_STATUS_PASS_ADD,
                                 server_msg: String::new(),
@@ -725,14 +837,14 @@ where
                             peer = %peer,
                             user = %request.user,
                             session = request.header.session_id,
-                            reason = %msg,
+                            reason = %msg.msg,
                             "authorization request rejected by semantic checks"
                         );
-                        let (code, detail) = authz_semantic_detail(msg);
+                        let (code, detail) = authz_semantic_detail(&msg);
                         let ctx = authz_context(&request);
                         let resp = authz_reason_response(
                             AUTHOR_STATUS_ERROR,
-                            msg.to_string(),
+                            authz_server_msg_with_detail(code, msg.msg, &detail),
                             code,
                             Some(detail.clone()),
                         );
@@ -1372,11 +1484,34 @@ where
                         .action
                         .map(|a| a.to_string())
                         .unwrap_or_else(|| "-".into());
+                    let reason = match reply.status {
+                        AUTHEN_STATUS_PASS => "success",
+                        AUTHEN_STATUS_FAIL => {
+                            let msg_lc = reply.server_msg.to_lowercase();
+                            if msg_lc.contains("too many authentication attempts") {
+                                "attempt-limit"
+                            } else if msg_lc.contains("too many username attempts") {
+                                "user-attempt-limit"
+                            } else if msg_lc.contains("too many password attempts") {
+                                "pass-attempt-limit"
+                            } else if msg_lc.contains("authentication locked out") {
+                                "lockout"
+                            } else {
+                                "credential-mismatch"
+                            }
+                        }
+                        AUTHEN_STATUS_ERROR => "error",
+                        AUTHEN_STATUS_FOLLOW => "follow",
+                        AUTHEN_STATUS_RESTART => "restart",
+                        _ => "other",
+                    };
                     let msg_data = if msg_data.is_empty() {
-                        format!("{attempts};type={authn_type};service={svc};action={action}")
+                        format!(
+                            "{attempts};type={authn_type};service={svc};action={action};reason={reason}"
+                        )
                     } else {
                         format!(
-                            "{attempts};type={authn_type};service={svc};action={action};msg={msg_data}"
+                            "{attempts};type={authn_type};service={svc};action={action};reason={reason};msg={msg_data}"
                         )
                     };
                     audit_event(
@@ -1419,6 +1554,43 @@ where
                         single_connect.activate(user.clone(), session_id);
                         info!(peer = %peer, user = %user, session = session_id, "single-connect established");
                     }
+                }
+            }
+            Ok(Some(Packet::Capability(cap))) => {
+                audit_event(
+                    "capability_rx",
+                    &peer,
+                    "",
+                    cap.header.session_id,
+                    "info",
+                    if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
+                        "request"
+                    } else if cap.flags & CAPABILITY_FLAG_RESPONSE != 0 {
+                        "response"
+                    } else {
+                        "unknown"
+                    },
+                    &format!(
+                        "vendor=0x{:04x};caps=0x{:08x}",
+                        cap.vendor, cap.capabilities.0
+                    ),
+                );
+                if cap.flags & CAPABILITY_FLAG_REQUEST != 0 {
+                    let resp = Capability {
+                        header: cap.header.clone(),
+                        version: cap.version,
+                        flags: CAPABILITY_FLAG_RESPONSE,
+                        vendor: cap.vendor,
+                        capabilities: cap.capabilities,
+                        tlvs: Vec::new(),
+                    };
+                    let _ = usg_tacacs_proto::write_capability(
+                        &mut stream,
+                        &cap.header,
+                        &resp,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
                 }
             }
             Ok(Some(Packet::Accounting(request))) => {
@@ -1546,6 +1718,17 @@ where
                             msg,
                             &meta,
                         );
+                        if resp.status == ACCT_STATUS_ERROR {
+                            audit_event(
+                                "acct_error",
+                                &peer,
+                                &request.user,
+                                request.header.session_id,
+                                "error",
+                                "acct-error",
+                                &resp.data,
+                            );
+                        }
                         resp
                     }
                 };
@@ -1633,14 +1816,25 @@ where
             }
             Ok(None) => {
                 debug!(peer = %peer, "client closed connection");
+                audit_event("conn_close", &peer, "", 0, "info", "client-close", "");
                 break;
             }
             Err(err) => {
                 warn!(error = %err, peer = %peer, "failed to read TACACS+ packet");
+                audit_event(
+                    "conn_close",
+                    &peer,
+                    "",
+                    0,
+                    "error",
+                    "read-error",
+                    &err.to_string(),
+                );
                 break;
             }
         }
     }
+    audit_event("conn_close", &peer, "", 0, "info", "loop-exit", "");
     Ok(())
 }
 

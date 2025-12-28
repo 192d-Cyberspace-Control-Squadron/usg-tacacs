@@ -138,3 +138,10 @@ pub fn validate_response_header(
     }
     Ok(())
 }
+
+pub fn is_known_service(service: &str) -> bool {
+    matches!(
+        service.to_ascii_lowercase().as_str(),
+        "shell" | "login" | "enable" | "ppp" | "arap" | "tty-daemon" | "connection" | "none"
+    )
+}

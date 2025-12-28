@@ -10,6 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 mod accounting;
 mod authen;
 mod author;
+mod capability;
 pub mod client;
 mod crypto;
 pub mod header;
@@ -20,6 +21,10 @@ pub use authen::{
     AuthSessionState, AuthenContinue, AuthenData, AuthenPacket, AuthenReply, AuthenStart,
 };
 pub use author::{AuthorizationRequest, AuthorizationResponse};
+pub use capability::{
+    CAPABILITY_FLAG_REQUEST, CAPABILITY_FLAG_RESPONSE, Capability, CapabilityFlags,
+    capability_request, encode_capability,
+};
 pub use header::Header;
 
 pub const VERSION: u8 = 0xc << 4; // Major version 0xC, minor 0
@@ -27,6 +32,7 @@ pub const VERSION: u8 = 0xc << 4; // Major version 0xC, minor 0
 pub const TYPE_AUTHEN: u8 = 0x01;
 pub const TYPE_AUTHOR: u8 = 0x02;
 pub const TYPE_ACCT: u8 = 0x03;
+pub const TYPE_CAPABILITY: u8 = 0x04;
 
 pub const FLAG_UNENCRYPTED: u8 = 0x01;
 pub const FLAG_SINGLE_CONNECT: u8 = 0x04;
@@ -66,6 +72,7 @@ pub enum Packet {
     Authorization(AuthorizationRequest),
     Authentication(AuthenPacket),
     Accounting(accounting::AccountingRequest),
+    Capability(Capability),
 }
 
 pub async fn read_packet<R>(reader: &mut R, secret: Option<&[u8]>) -> Result<Option<Packet>>
@@ -106,6 +113,9 @@ where
         TYPE_ACCT => accounting::parse_accounting_body(header, &body)
             .map(Packet::Accounting)
             .map(Some),
+        TYPE_CAPABILITY => capability::parse_capability_body(header, &body)
+            .map(Packet::Capability)
+            .map(Some),
         other => bail!("unsupported TACACS+ type {}", other),
     }
 }
@@ -123,6 +133,7 @@ where
             bail!("got authentication packet when authorization expected")
         }
         Some(Packet::Accounting(_)) => bail!("got accounting packet when authorization expected"),
+        Some(Packet::Capability(_)) => bail!("got capability packet when authorization expected"),
         None => Ok(None),
     }
 }
@@ -232,6 +243,41 @@ where
     writer.flush().await.context("flushing accounting response")
 }
 
+pub async fn write_capability<W>(
+    writer: &mut W,
+    request_header: &Header,
+    cap: &Capability,
+    secret: Option<&[u8]>,
+) -> Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    if request_header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet not permitted");
+    }
+    let sec = secret.context("cannot send encrypted TACACS+ capability without a shared secret")?;
+    ensure!(
+        sec.len() >= MIN_SECRET_LEN,
+        "shared secret too short; minimum {MIN_SECRET_LEN} bytes required"
+    );
+    let mut body = encode_capability(cap)?;
+    crypto::apply_body_crypto(request_header, &mut body, secret)?;
+    let header: Header = request_header.response(body.len() as u32);
+    header::validate_response_header(
+        &header,
+        Some(TYPE_CAPABILITY),
+        ALLOWED_FLAGS,
+        true,
+        VERSION >> 4,
+    )?;
+    header::write_header(writer, &header).await?;
+    writer
+        .write_all(&body)
+        .await
+        .with_context(|| "writing capability response body")?;
+    writer.flush().await.context("flushing capability response")
+}
+
 pub async fn read_authen_reply<R>(
     reader: &mut R,
     secret: Option<&[u8]>,
@@ -296,6 +342,17 @@ where
 
     ensure!(body.len() >= 5, "authorization response too short");
     let status = body[0];
+    ensure!(
+        status == AUTHOR_STATUS_PASS_REPL
+            || status == AUTHOR_STATUS_PASS_ADD
+            || status == AUTHOR_STATUS_FAIL
+            || status == AUTHOR_STATUS_ERROR,
+        "authorization response status invalid"
+    );
+    if status == ACCT_STATUS_FOLLOW {
+        warn!("authorization response uses deprecated FOLLOW status");
+        bail!("authorization response uses deprecated FOLLOW status");
+    }
     ensure!(
         status == AUTHOR_STATUS_PASS_REPL
             || status == AUTHOR_STATUS_PASS_ADD
@@ -376,6 +433,10 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
         !service_val.is_empty(),
         "authorization service attribute must have a value"
     );
+    ensure!(
+        crate::header::is_known_service(service_val),
+        "authorization service attribute value unknown"
+    );
 
     let protocol_attr = attrs
         .iter()
@@ -394,6 +455,12 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
             protocol_attr.is_some(),
             "shell authorization requires protocol attribute"
         );
+        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+            ensure!(
+                !proto.is_empty(),
+                "authorization protocol attribute must have a value"
+            );
+        }
         ensure!(
             cmd_attrs.is_empty() && cmd_arg_attrs.is_empty(),
             "shell authorization must not include cmd/cmd-arg attributes"
@@ -407,9 +474,23 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
             protocol_count <= 1,
             "authorization must include at most one protocol attribute"
         );
+        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
+            ensure!(
+                !proto.is_empty(),
+                "authorization protocol attribute must have a value"
+            );
+            let allowed = [
+                "ip", "ipv6", "lat", "mop", "vpdn", "xremote", "pad", "shell", "ppp", "arap",
+                "none",
+            ];
+            ensure!(
+                allowed.iter().any(|p| proto.eq_ignore_ascii_case(p)),
+                "authorization protocol attribute value unknown"
+            );
+        }
         ensure!(
             cmd_attrs.len() == 1,
-            "authorization must include exactly one cmd attribute"
+            "authorization must include exactly one cmd attribute for non-shell services"
         );
         ensure!(
             !cmd_attrs[0].value.as_deref().unwrap_or("").is_empty(),
@@ -427,6 +508,16 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
             .iter()
             .position(|a| a.to_lowercase().starts_with("service="))
             .unwrap_or(0);
+        let protocol_positions = req
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
+            .map(|(i, _)| i);
+        ensure!(
+            !protocol_positions.clone().any(|i| i < service_pos),
+            "service attribute must precede protocol attributes"
+        );
         let cmd_positions = req
             .args
             .iter()
