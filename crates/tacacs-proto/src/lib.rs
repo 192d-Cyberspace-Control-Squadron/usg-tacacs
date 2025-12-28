@@ -337,6 +337,238 @@ pub fn validate_accounting_response_header(header: &Header) -> Result<()> {
     header::validate_response_header(header, Some(TYPE_ACCT), ALLOWED_FLAGS, true, VERSION >> 4)
 }
 
+/// Validate an outgoing authorization request against basic RFC 8907 semantics.
+pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
+    ensure!((1..=8).contains(&req.authen_method), "authorization authen_method invalid");
+    ensure!(req.priv_lvl <= 0x0f, "authorization priv_lvl invalid");
+    ensure!(req.authen_type <= AUTHEN_TYPE_ARAP, "authorization authen_type invalid");
+    ensure!(req.authen_service <= 0x07, "authorization authen_service invalid");
+
+    let attrs = req.attributes();
+    let service_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("service"))
+        .collect();
+    ensure!(
+        service_attrs.len() == 1,
+        "authorization must include exactly one service attribute"
+    );
+    let service_val = service_attrs[0].value.as_deref().unwrap_or("");
+    ensure!(
+        !service_val.is_empty(),
+        "authorization service attribute must have a value"
+    );
+
+    let protocol_attr = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("protocol"));
+    let cmd_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd"))
+        .collect();
+    let cmd_arg_attrs: Vec<_> = attrs
+        .iter()
+        .filter(|a| a.name.eq_ignore_ascii_case("cmd-arg"))
+        .collect();
+
+    if service_val.eq_ignore_ascii_case("shell") {
+        ensure!(
+            protocol_attr.is_some(),
+            "shell authorization requires protocol attribute"
+        );
+        ensure!(
+            cmd_attrs.is_empty() && cmd_arg_attrs.is_empty(),
+            "shell authorization must not include cmd/cmd-arg attributes"
+        );
+    } else {
+        let protocol_count = attrs
+            .iter()
+            .filter(|a| a.name.eq_ignore_ascii_case("protocol"))
+            .count();
+        ensure!(
+            protocol_count <= 1,
+            "authorization must include at most one protocol attribute"
+        );
+        ensure!(
+            cmd_attrs.len() == 1,
+            "authorization must include exactly one cmd attribute"
+        );
+        ensure!(
+            !cmd_attrs[0].value.as_deref().unwrap_or("").is_empty(),
+            "cmd attribute must have a value"
+        );
+        ensure!(
+            !cmd_arg_attrs
+                .iter()
+                .any(|a| a.value.as_deref().unwrap_or("").is_empty()),
+            "cmd-arg attributes must have values"
+        );
+        // Service must precede cmd/cmd-arg in the arg list.
+        let service_pos = req
+            .args
+            .iter()
+            .position(|a| a.to_lowercase().starts_with("service="))
+            .unwrap_or(0);
+        let cmd_positions = req
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
+            .map(|(i, _)| i);
+        ensure!(
+            !cmd_positions.clone().any(|i| i < service_pos),
+            "service attribute must precede command attributes"
+        );
+    }
+
+    if let Some(attr) = attrs
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
+    {
+        if let Some(val) = attr.value.as_deref() {
+            let parsed: u32 = val
+                .parse()
+                .map_err(|_| anyhow!("priv-lvl must be numeric"))?;
+            ensure!(parsed <= 0x0f, "priv-lvl must be 0-15");
+            ensure!(
+                parsed as u8 == req.priv_lvl,
+                "priv-lvl attribute must match header priv_lvl"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate an outgoing accounting request against RFC 8907 semantics.
+pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
+    ensure!(
+        (1..=8).contains(&req.authen_method),
+        "accounting authen_method invalid"
+    );
+    ensure!(req.authen_type <= 0x04, "accounting authen_type invalid");
+    ensure!(req.authen_service <= 0x07, "accounting authen_service invalid");
+    ensure!(req.priv_lvl <= 0x0f, "accounting priv_lvl invalid");
+
+    let valid_mask: u8 = ACCT_FLAG_START | ACCT_FLAG_STOP | ACCT_FLAG_WATCHDOG;
+    ensure!(
+        req.flags & !valid_mask == 0 && (req.flags & valid_mask).count_ones() == 1,
+        "accounting flags invalid"
+    );
+
+    let is_start = req.flags & ACCT_FLAG_START != 0;
+    let is_stop = req.flags & ACCT_FLAG_STOP != 0;
+    let is_watchdog = req.flags & ACCT_FLAG_WATCHDOG != 0;
+    ensure!(
+        !(is_start || is_stop || is_watchdog) || !req.args.is_empty(),
+        "accounting records require attributes"
+    );
+
+    let attrs = req.attributes();
+    let has_service_or_cmd = attrs.iter().any(|a| {
+        let name = a.name.as_str();
+        name.eq_ignore_ascii_case("service")
+            || name.eq_ignore_ascii_case("cmd")
+            || name.eq_ignore_ascii_case("cmd-arg")
+    });
+    ensure!(
+        has_service_or_cmd,
+        "accounting requires service or command attributes"
+    );
+
+    let has_task = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("task_id"));
+    let has_elapsed = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
+    let has_status = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("status"));
+    let has_bytes_in = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
+    let has_bytes_out = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("bytes_out"));
+
+    if is_start {
+        ensure!(has_task, "start accounting requires task_id attribute");
+    }
+    if is_stop {
+        ensure!(
+            has_task && has_elapsed && has_status,
+            "stop accounting requires task_id, elapsed_time, and status attributes"
+        );
+        ensure!(
+            has_bytes_in && has_bytes_out,
+            "stop accounting requires bytes_in and bytes_out attributes"
+        );
+    }
+    if is_watchdog {
+        ensure!(has_task, "watchdog accounting requires task_id attribute");
+    }
+
+    let mut status_val: Option<u32> = None;
+    let parse_u32 = |key: &str| -> Result<Option<u32>> {
+        if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
+            let val = attr.value.as_deref().unwrap_or("");
+            let parsed: u32 = val
+                .parse()
+                .map_err(|_| anyhow!("accounting attribute {key} must be numeric"))?;
+            return Ok(Some(parsed));
+        }
+        Ok(None)
+    };
+    if has_task {
+        parse_u32("task_id")?;
+    }
+    if has_elapsed {
+        parse_u32("elapsed_time")?;
+    }
+    if has_status {
+        status_val = parse_u32("status")?;
+    }
+    for key in ["bytes_in", "bytes_out", "elapsed_seconds"].iter() {
+        parse_u32(key)?;
+    }
+    if let Some(code) = status_val {
+        ensure!(code <= 0x0f, "accounting status code must be 0-15");
+        ensure!(
+            code == 0 || is_stop,
+            "non-success accounting status is only valid on stop records"
+        );
+    }
+    Ok(())
+}
+
+/// Validate an outgoing authentication start packet for basic RFC compliance.
+pub fn validate_authen_start(req: &authen::AuthenStart) -> Result<()> {
+    ensure!(
+        req.header.seq_no % 2 == 1,
+        "authentication start must use odd sequence number"
+    );
+    ensure!(
+        req.authen_type == AUTHEN_TYPE_ASCII
+            || req.authen_type == AUTHEN_TYPE_PAP
+            || req.authen_type == AUTHEN_TYPE_CHAP,
+        "authentication type invalid or unsupported"
+    );
+    ensure!(req.priv_lvl <= 0x0f, "authentication priv_lvl invalid");
+    // For ASCII, username may be empty initially; for PAP/CHAP, credentials must be present.
+    match req.authen_type {
+        AUTHEN_TYPE_PAP | AUTHEN_TYPE_CHAP => {
+            ensure!(
+                !req.data.is_empty(),
+                "authentication payload required for PAP/CHAP"
+            );
+        }
+        AUTHEN_TYPE_ASCII => {}
+        _ => {}
+    }
+    Ok(())
+}
+
 pub async fn read_accounting_response<R>(
     reader: &mut R,
     secret: Option<&[u8]>,

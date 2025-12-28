@@ -362,6 +362,23 @@ where
         };
         match packet_result {
             Ok(Some(Packet::Authorization(request))) => {
+                if let Err(err) = usg_tacacs_proto::validate_author_request(&request) {
+                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
+                    let response = AuthorizationResponse {
+                        status: AUTHOR_STATUS_ERROR,
+                        server_msg: err.to_string(),
+                        data: String::new(),
+                        args: Vec::new(),
+                    };
+                    let _ = write_author_response(
+                        &mut stream,
+                        &request.header,
+                        &response,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    break;
+                }
                 let authz_single =
                     request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
                 if single_connect.active && !authz_single {
@@ -499,6 +516,26 @@ where
                     AuthenPacket::Start(start) => start.header.session_id,
                     AuthenPacket::Continue(cont) => cont.header.session_id,
                 };
+                if let AuthenPacket::Start(start) = &packet {
+                    if let Err(err) = usg_tacacs_proto::validate_authen_start(start) {
+                        warn!(peer = %peer, user = %start.user, session = session_id, error = %err, "authentication start failed RFC validation");
+                        let reply = AuthenReply {
+                            status: AUTHEN_STATUS_ERROR,
+                            flags: 0,
+                            server_msg: err.to_string(),
+                            server_msg_raw: Vec::new(),
+                            data: Vec::new(),
+                        };
+                        let _ = write_authen_reply(
+                            &mut stream,
+                            &start.header,
+                            &reply,
+                            secret.as_deref().map(|s| s.as_slice()),
+                        )
+                        .await;
+                        break;
+                    }
+                }
                 let single_connect_flag = match &packet {
                     AuthenPacket::Start(start) => {
                         start.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0
@@ -997,6 +1034,23 @@ where
                 }
             }
             Ok(Some(Packet::Accounting(request))) => {
+                if let Err(err) = usg_tacacs_proto::validate_accounting_request(&request) {
+                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "accounting request failed RFC validation");
+                    let response = AccountingResponse {
+                        status: ACCT_STATUS_ERROR,
+                        server_msg: err.to_string(),
+                        data: String::new(),
+                        args: Vec::new(),
+                    };
+                    let _ = write_accounting_response(
+                        &mut stream,
+                        &request.header,
+                        &response,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    break;
+                }
                 let acct_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
                 if single_connect.active && !acct_single {
                     warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on accounting");
