@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
     let credentials: Arc<HashMap<String, String>> = Arc::new(credentials_map(&args));
     let ascii_backoff_max_ms = args.ascii_backoff_max_ms;
     let ascii_lockout_limit = args.ascii_lockout_limit;
+    let single_connect_idle_secs = args.single_connect_idle_secs;
 
     let mut handles = Vec::new();
 
@@ -78,6 +79,7 @@ async fn main() -> Result<()> {
         let ascii_backoff_ms = args.ascii_backoff_ms;
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
+        let single_connect_idle_secs = single_connect_idle_secs;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -91,6 +93,7 @@ async fn main() -> Result<()> {
                 ascii_backoff_ms,
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
+                single_connect_idle_secs,
             )
             .await
             {
@@ -100,14 +103,8 @@ async fn main() -> Result<()> {
     }
 
     if let Some(addr) = args.listen_legacy {
-        if shared_secret.is_none() {
-            bail!("--secret is required for legacy TACACS+");
-        }
-        if shared_secret.as_ref().unwrap().len() < MIN_SECRET_LEN {
-            bail!(
-                "shared secret must be at least {} bytes for legacy TACACS+",
-                MIN_SECRET_LEN
-            );
+        if shared_secret.as_deref().map(|s| s.len()).unwrap_or(0) < MIN_SECRET_LEN {
+            bail!("legacy TACACS+ requires a shared secret of at least {} bytes", MIN_SECRET_LEN);
         }
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
@@ -118,6 +115,7 @@ async fn main() -> Result<()> {
         let ascii_backoff_ms = args.ascii_backoff_ms;
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
+        let single_connect_idle_secs = single_connect_idle_secs;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_legacy(
                 addr,
@@ -130,6 +128,7 @@ async fn main() -> Result<()> {
                 ascii_backoff_ms,
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
+                single_connect_idle_secs,
             )
             .await
             {

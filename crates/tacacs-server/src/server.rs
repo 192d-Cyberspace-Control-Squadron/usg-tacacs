@@ -15,10 +15,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::RwLock;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
@@ -27,11 +28,69 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS,
     AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII,
     AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL,
-    AUTHOR_STATUS_PASS_ADD, AccountingResponse, AuthSessionState, AuthenData, AuthenPacket,
+    AUTHOR_STATUS_PASS_ADD, ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, AccountingResponse, AccountingRequest, AuthSessionState, AuthenData, AuthenPacket,
     AuthenReply, AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
     validate_author_response_header, write_accounting_response, write_authen_reply,
     write_author_response,
 };
+
+fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static str> {
+    let is_start = req.flags & ACCT_FLAG_START != 0;
+    let is_stop = req.flags & ACCT_FLAG_STOP != 0;
+    let is_watchdog = req.flags & ACCT_FLAG_WATCHDOG != 0;
+    // RFC expects one of the flags; parse already enforced exclusivity.
+    if (is_start || is_stop || is_watchdog) && req.args.is_empty() {
+        return Err("accounting records require attributes");
+    }
+    let attrs = req.attributes();
+    let has_service_or_cmd = attrs.iter().any(|a| {
+        let name = a.name.as_str();
+        name.eq_ignore_ascii_case("service")
+            || name.eq_ignore_ascii_case("cmd")
+            || name.eq_ignore_ascii_case("cmd-arg")
+    });
+    if !has_service_or_cmd {
+        return Err("accounting requires service or command attributes");
+    }
+    let has_task = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("task_id"));
+    let has_elapsed = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
+    let has_status = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("status"));
+    if is_start && !has_task {
+        return Err("start accounting requires task_id attribute");
+    }
+    if is_stop && (!has_task || !has_elapsed || !has_status) {
+        return Err("stop accounting requires task_id, elapsed_time, and status attributes");
+    }
+    if is_watchdog && !has_task {
+        return Err("watchdog accounting requires task_id attribute");
+    }
+    // Numeric fields should be valid unsigned integers.
+    let parse_u32 = |key: &str| -> Result<(), &'static str> {
+        if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
+            let val = attr.value.as_deref().unwrap_or("");
+            if val.parse::<u32>().is_err() {
+                return Err("accounting attributes must be numeric where required");
+            }
+        }
+        Ok(())
+    };
+    if has_task {
+        parse_u32("task_id")?;
+    }
+    if has_elapsed {
+        parse_u32("elapsed_time")?;
+    }
+    if has_status {
+        parse_u32("status")?;
+    }
+    Ok(())
+}
 
 pub async fn serve_tls(
     addr: SocketAddr,
@@ -45,6 +104,7 @@ pub async fn serve_tls(
     ascii_backoff_ms: u64,
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
+    single_connect_idle_secs: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -76,6 +136,7 @@ pub async fn serve_tls(
                         ascii_backoff_ms,
                         ascii_backoff_max_ms,
                         ascii_lockout_limit,
+                        single_connect_idle_secs,
                     )
                     .await
                     {
@@ -99,6 +160,7 @@ pub async fn serve_legacy(
     ascii_backoff_ms: u64,
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
+    single_connect_idle_secs: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -128,6 +190,7 @@ pub async fn serve_legacy(
                 ascii_backoff_ms,
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
+                single_connect_idle_secs,
             )
             .await
             {
@@ -149,6 +212,7 @@ async fn handle_connection<S>(
     ascii_backoff_ms: u64,
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
+    single_connect_idle_secs: u64,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -157,7 +221,19 @@ where
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect = SingleConnectState::default();
     loop {
-        match read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice())).await {
+        let read_future = read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice()));
+        let packet_result = if single_connect.active && single_connect_idle_secs > 0 {
+            match timeout(Duration::from_secs(single_connect_idle_secs), read_future).await {
+                Ok(res) => res,
+                Err(_) => {
+                    warn!(peer = %peer, "single-connect idle timeout reached; closing");
+                    break;
+                }
+            }
+        } else {
+            read_future.await
+        };
+        match packet_result {
             Ok(Some(Packet::Authorization(request))) => {
                 let authz_single =
                     request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
@@ -849,12 +925,28 @@ where
                 if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
                     warn!(error = %err, peer = %peer, "accounting header invalid");
                 }
-                let status = ACCT_STATUS_SUCCESS;
-                let response = AccountingResponse {
-                    status,
-                    server_msg: String::new(),
-                    data: String::new(),
-                    args: Vec::new(),
+                let response = match validate_accounting_semantics(&request) {
+                    Ok(()) => AccountingResponse {
+                        status: ACCT_STATUS_SUCCESS,
+                        server_msg: String::new(),
+                        data: String::new(),
+                        args: Vec::new(),
+                    },
+                    Err(msg) => {
+                        warn!(
+                            peer = %peer,
+                            user = %request.user,
+                            session = request.header.session_id,
+                            reason = %msg,
+                            "accounting request rejected by semantic checks"
+                        );
+                        AccountingResponse {
+                        status: ACCT_STATUS_ERROR,
+                        server_msg: msg.to_string(),
+                        data: String::new(),
+                        args: Vec::new(),
+                        }
+                    }
                 };
                 write_accounting_response(
                     &mut stream,

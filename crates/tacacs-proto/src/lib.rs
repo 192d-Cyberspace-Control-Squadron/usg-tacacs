@@ -4,6 +4,7 @@
 //! The `legacy-md5` feature (on by default) enables the TACACS+ MD5 body obfuscation; disable it for FIPS-only builds.
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use log::warn;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod accounting;
@@ -74,20 +75,15 @@ where
         Err(err) if is_clean_eof(&err) => return Ok(None),
         Err(err) => return Err(err),
     };
-    match secret {
-        Some(sec) => {
-            if header.flags & FLAG_UNENCRYPTED != 0 {
-                bail!("unencrypted TACACS+ packet received but obfuscation is required");
-            }
-            if sec.len() < MIN_SECRET_LEN {
-                bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-            }
+    if header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
+    }
+    if let Some(sec) = secret {
+        if sec.len() < MIN_SECRET_LEN {
+            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-        None => {
-            if header.flags & FLAG_UNENCRYPTED == 0 {
-                bail!("TACACS+ packet requires obfuscation but no secret provided");
-            }
-        }
+    } else {
+        bail!("TACACS+ packet requires obfuscation but no secret provided");
     }
     header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
 
@@ -138,20 +134,15 @@ pub async fn write_author_response<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    match secret {
-        Some(sec) => {
-            if request_header.flags & FLAG_UNENCRYPTED != 0 {
-                bail!("unencrypted TACACS+ packet not permitted");
-            }
-            if sec.len() < MIN_SECRET_LEN {
-                bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-            }
+    if request_header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet not permitted");
+    }
+    if let Some(sec) = secret {
+        if sec.len() < MIN_SECRET_LEN {
+            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-        None => {
-            if request_header.flags & FLAG_UNENCRYPTED == 0 {
-                bail!("cannot send encrypted TACACS+ response without a shared secret");
-            }
-        }
+    } else {
+        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body = author::encode_author_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
@@ -180,20 +171,15 @@ pub async fn write_authen_reply<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    match secret {
-        Some(sec) => {
-            if request_header.flags & FLAG_UNENCRYPTED != 0 {
-                bail!("unencrypted TACACS+ packet not permitted");
-            }
-            if sec.len() < MIN_SECRET_LEN {
-                bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-            }
+    if request_header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet not permitted");
+    }
+    if let Some(sec) = secret {
+        if sec.len() < MIN_SECRET_LEN {
+            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-        None => {
-            if request_header.flags & FLAG_UNENCRYPTED == 0 {
-                bail!("cannot send encrypted TACACS+ response without a shared secret");
-            }
-        }
+    } else {
+        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
@@ -222,20 +208,15 @@ pub async fn write_accounting_response<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    match secret {
-        Some(sec) => {
-            if request_header.flags & FLAG_UNENCRYPTED != 0 {
-                bail!("unencrypted TACACS+ packet not permitted");
-            }
-            if sec.len() < MIN_SECRET_LEN {
-                bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
-            }
+    if request_header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet not permitted");
+    }
+    if let Some(sec) = secret {
+        if sec.len() < MIN_SECRET_LEN {
+            bail!("shared secret too short; minimum {MIN_SECRET_LEN} bytes required");
         }
-        None => {
-            if request_header.flags & FLAG_UNENCRYPTED == 0 {
-                bail!("cannot send encrypted TACACS+ response without a shared secret");
-            }
-        }
+    } else {
+        bail!("cannot send encrypted TACACS+ response without a shared secret");
     }
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
@@ -261,6 +242,12 @@ where
         Err(err) if is_clean_eof(&err) => return Ok(None),
         Err(err) => return Err(err),
     };
+    if header.flags & FLAG_UNENCRYPTED != 0 {
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
+    }
+    if secret.is_none() {
+        bail!("encrypted TACACS+ packet received without a shared secret");
+    }
     header::validate_response_header(
         &header,
         Some(TYPE_AUTHEN),
@@ -292,7 +279,7 @@ where
         Err(err) => return Err(err),
     };
     if header.flags & FLAG_UNENCRYPTED != 0 {
-        bail!("unencrypted TACACS+ packet received but obfuscation is required");
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
     }
     if secret.is_none() {
         bail!("encrypted TACACS+ packet received without a shared secret");
@@ -363,7 +350,7 @@ where
         Err(err) => return Err(err),
     };
     if header.flags & FLAG_UNENCRYPTED != 0 {
-        bail!("unencrypted TACACS+ packet received but obfuscation is required");
+        bail!("unencrypted TACACS+ packet received (deprecated and refused)");
     }
     if secret.is_none() {
         bail!("encrypted TACACS+ packet received without a shared secret");
@@ -378,6 +365,14 @@ where
 
     ensure!(body.len() >= 5, "accounting response too short");
     let status = body[0];
+    ensure!(
+        status == ACCT_STATUS_SUCCESS || status == ACCT_STATUS_ERROR || status == ACCT_STATUS_FOLLOW,
+        "accounting response status invalid"
+    );
+    if status == ACCT_STATUS_FOLLOW {
+        warn!("accounting response uses deprecated FOLLOW status");
+        bail!("accounting response uses deprecated FOLLOW status");
+    }
     let server_msg_len = u16::from_be_bytes([body[1], body[2]]) as usize;
     let data_len = u16::from_be_bytes([body[3], body[4]]) as usize;
     let arg_cnt = body.get(5).copied().unwrap_or(0) as usize;
@@ -386,6 +381,9 @@ where
         .get(cursor..cursor + arg_cnt)
         .ok_or_else(|| anyhow!("accounting response args length truncated"))?;
     cursor += arg_cnt;
+    for (idx, len) in arg_lens.iter().enumerate() {
+        ensure!(*len > 0, "accounting response arg[{idx}] length invalid");
+    }
     let total_args_len: usize = arg_lens.iter().map(|l| *l as usize).sum();
     ensure!(
         cursor + server_msg_len + data_len + total_args_len <= body.len(),

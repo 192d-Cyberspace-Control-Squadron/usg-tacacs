@@ -78,6 +78,10 @@ pub struct Args {
     /// Lock out ASCII auth after this many attempts (0 = no lockout).
     #[arg(long, default_value_t = 0)]
     pub ascii_lockout_limit: u8,
+
+    /// Idle timeout (seconds) for single-connection sessions before closing (0 = disabled).
+    #[arg(long, default_value_t = 300)]
+    pub single_connect_idle_secs: u64,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {
