@@ -70,15 +70,15 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     if is_watchdog && !has_task {
         return Err("watchdog accounting requires task_id attribute");
     }
-    // Numeric fields should be valid unsigned integers.
-    let parse_u32 = |key: &str| -> Result<(), &'static str> {
+    // Numeric fields should be valid unsigned integers and within expected ranges.
+    let mut status_val: Option<u32> = None;
+    let parse_u32 = |key: &str| -> Result<Option<u32>, &'static str> {
         if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
             let val = attr.value.as_deref().unwrap_or("");
-            if val.parse::<u32>().is_err() {
-                return Err("accounting attributes must be numeric where required");
-            }
+            let parsed: u32 = val.parse().map_err(|_| "accounting attributes must be numeric where required")?;
+            return Ok(Some(parsed));
         }
-        Ok(())
+        Ok(None)
     };
     if has_task {
         parse_u32("task_id")?;
@@ -87,7 +87,12 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
         parse_u32("elapsed_time")?;
     }
     if has_status {
-        parse_u32("status")?;
+        status_val = parse_u32("status")?;
+    }
+    if let Some(code) = status_val {
+        if code > 0x0f {
+            return Err("accounting status code must be 0-15");
+        }
     }
     Ok(())
 }
