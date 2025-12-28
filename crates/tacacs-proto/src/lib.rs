@@ -11,6 +11,7 @@ mod authen;
 mod author;
 mod crypto;
 pub mod header;
+pub mod client;
 mod util;
 
 pub use accounting::{AccountingRequest, AccountingResponse};
@@ -161,6 +162,13 @@ where
     let mut body = author::encode_author_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header = request_header.response(body.len() as u32);
+    header::validate_response_header(
+        &header,
+        Some(TYPE_AUTHOR),
+        ALLOWED_FLAGS,
+        true,
+        VERSION >> 4,
+    )?;
     header::write_header(writer, &header).await?;
     writer
         .write_all(&body)
@@ -196,6 +204,13 @@ where
     let mut body: Vec<u8> = authen::encode_authen_reply(reply)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32);
+    header::validate_response_header(
+        &header,
+        Some(TYPE_AUTHEN),
+        ALLOWED_FLAGS,
+        true,
+        VERSION >> 4,
+    )?;
     header::write_header(writer, &header).await?;
     writer
         .write_all(&body)
@@ -231,6 +246,13 @@ where
     let mut body: Vec<u8> = accounting::encode_accounting_response(response)?;
     crypto::apply_body_crypto(request_header, &mut body, secret)?;
     let header: Header = request_header.response(body.len() as u32);
+    header::validate_response_header(
+        &header,
+        Some(TYPE_ACCT),
+        ALLOWED_FLAGS,
+        true,
+        VERSION >> 4,
+    )?;
     header::write_header(writer, &header).await?;
     writer
         .write_all(&body)
