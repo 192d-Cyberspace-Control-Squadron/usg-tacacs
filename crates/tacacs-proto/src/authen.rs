@@ -60,10 +60,16 @@ pub struct AuthSessionState {
     pub ascii_need_user: bool,
     pub ascii_need_pass: bool,
     pub ascii_attempts: u8,
+    pub service: Option<u8>,
 }
 
 impl AuthSessionState {
-    pub fn new_from_start(header: &Header, authen_type: u8, username: String) -> Result<Self> {
+    pub fn new_from_start(
+        header: &Header,
+        authen_type: u8,
+        username: String,
+        service: u8,
+    ) -> Result<Self> {
         ensure!(header.seq_no % 2 == 1, "auth start must use odd seq");
         Ok(Self {
             last_seq: header.seq_no,
@@ -75,6 +81,7 @@ impl AuthSessionState {
             ascii_need_user: false,
             ascii_need_pass: false,
             ascii_attempts: 0,
+            service: Some(service),
         })
     }
 

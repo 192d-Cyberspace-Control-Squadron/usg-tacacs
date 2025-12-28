@@ -467,6 +467,7 @@ where
                             &start.header,
                             start.authen_type,
                             start.user.clone(),
+                            start.service,
                         )
                         .unwrap_or(AuthSessionState {
                             last_seq: start.header.seq_no,
@@ -478,6 +479,7 @@ where
                             ascii_need_pass: false,
                             chap_id: None,
                             ascii_attempts: 0,
+                            service: Some(start.service),
                         }),
                         AuthenPacket::Continue(_) => AuthSessionState {
                             last_seq: 0,
@@ -489,6 +491,7 @@ where
                             ascii_need_pass: false,
                             chap_id: None,
                             ascii_attempts: 0,
+                            service: None,
                         },
                     });
                 if let AuthenPacket::Continue(ref cont) = packet {
@@ -501,6 +504,29 @@ where
                     AuthenPacket::Start(ref start) => match start.authen_type {
                         AUTHEN_TYPE_ASCII => {
                             state.authen_type = Some(AUTHEN_TYPE_ASCII);
+                            state.service = Some(start.service);
+                            let username_prompt =
+                                |client_msg: Option<&[u8]>, service: Option<u8>| {
+                                    if let Some(msg) = client_msg {
+                                        if !msg.is_empty() {
+                                            return String::from_utf8_lossy(msg).to_string();
+                                        }
+                                    }
+                                    service
+                                        .map(|svc| format!("Username (service {svc}):"))
+                                        .unwrap_or_else(|| "Username:".into())
+                                };
+                            let password_prompt =
+                                |client_msg: Option<&[u8]>, service: Option<u8>| {
+                                    if let Some(msg) = client_msg {
+                                        if !msg.is_empty() {
+                                            return String::from_utf8_lossy(msg).to_string();
+                                        }
+                                    }
+                                    service
+                                        .map(|svc| format!("Password (service {svc}):"))
+                                        .unwrap_or_else(|| "Password:".into())
+                                };
                             state.username = if start.user.is_empty() {
                                 None
                             } else {
@@ -511,29 +537,36 @@ where
                                 AuthenReply {
                                     status: AUTHEN_STATUS_GETUSER,
                                     flags: 0,
-                                    server_msg: "Username:".into(),
+                                    server_msg: username_prompt(None, state.service),
                                     data: Vec::new(),
                                 }
                             } else if !start.data.is_empty() {
                                 match String::from_utf8(start.data.clone()) {
-                                    Ok(password) => AuthenReply {
-                                        status: if verify_pap(
+                                    Ok(password) => {
+                                        let ok = verify_pap(
                                             state.username.as_deref().unwrap_or_default(),
                                             &password,
                                             &credentials,
-                                        ) {
-                                            AUTHEN_STATUS_PASS
-                                        } else {
-                                            AUTHEN_STATUS_FAIL
-                                        },
-                                        flags: 0,
-                                        server_msg: String::new(),
-                                        data: Vec::new(),
-                                    },
+                                        );
+                                        AuthenReply {
+                                            status: if ok {
+                                                AUTHEN_STATUS_PASS
+                                            } else {
+                                                AUTHEN_STATUS_FAIL
+                                            },
+                                            flags: 0,
+                                            server_msg: if ok {
+                                                "authentication succeeded".into()
+                                            } else {
+                                                "invalid credentials".into()
+                                            },
+                                            data: Vec::new(),
+                                        }
+                                    }
                                     Err(_) => AuthenReply {
                                         status: AUTHEN_STATUS_ERROR,
                                         flags: 0,
-                                        server_msg: "invalid ASCII password encoding".into(),
+                                        server_msg: "invalid password encoding".into(),
                                         data: Vec::new(),
                                     },
                                 }
@@ -542,7 +575,7 @@ where
                                 AuthenReply {
                                     status: AUTHEN_STATUS_GETPASS,
                                     flags: AUTHEN_FLAG_NOECHO,
-                                    server_msg: "Password:".into(),
+                                    server_msg: password_prompt(None, state.service),
                                     data: Vec::new(),
                                 }
                             }
@@ -604,6 +637,22 @@ where
                     },
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
+                            let uname_prompt = if !cont.user_msg.is_empty() {
+                                String::from_utf8_lossy(&cont.user_msg).to_string()
+                            } else {
+                                state
+                                    .service
+                                    .map(|svc| format!("Username (service {svc}):"))
+                                    .unwrap_or_else(|| "Username:".into())
+                            };
+                            let pwd_prompt = if !cont.user_msg.is_empty() {
+                                String::from_utf8_lossy(&cont.user_msg).to_string()
+                            } else {
+                                state
+                                    .service
+                                    .map(|svc| format!("Password (service {svc}):"))
+                                    .unwrap_or_else(|| "Password:".into())
+                            };
                             if ascii_attempt_limit > 0
                                 && state.ascii_attempts >= ascii_attempt_limit
                             {
@@ -637,14 +686,14 @@ where
                                             AuthenReply {
                                                 status: AUTHEN_STATUS_GETPASS,
                                                 flags: AUTHEN_FLAG_NOECHO,
-                                                server_msg: "Password:".into(),
+                                                server_msg: pwd_prompt.clone(),
                                                 data: Vec::new(),
                                             }
                                         }
                                         Ok(_) => AuthenReply {
                                             status: AUTHEN_STATUS_GETUSER,
                                             flags: 0,
-                                            server_msg: "Username:".into(),
+                                            server_msg: uname_prompt.clone(),
                                             data: Vec::new(),
                                         },
                                         Err(_) => AuthenReply {
@@ -661,25 +710,26 @@ where
                                                 AuthenReply {
                                                     status: AUTHEN_STATUS_GETPASS,
                                                     flags: AUTHEN_FLAG_NOECHO,
-                                                    server_msg: "Password:".into(),
+                                                    server_msg: pwd_prompt.clone(),
                                                     data: Vec::new(),
                                                 }
                                             } else {
                                                 state.ascii_need_pass = false;
                                                 let user =
                                                     state.username.clone().unwrap_or_default();
+                                                let ok = verify_pap(&user, &password, &credentials);
                                                 AuthenReply {
-                                                    status: if verify_pap(
-                                                        &user,
-                                                        &password,
-                                                        &credentials,
-                                                    ) {
+                                                    status: if ok {
                                                         AUTHEN_STATUS_PASS
                                                     } else {
                                                         AUTHEN_STATUS_FAIL
                                                     },
-                                                    flags: 0,
-                                                    server_msg: String::new(),
+                                                    flags: 0, // clear NOECHO after decision
+                                                    server_msg: if ok {
+                                                        "authentication succeeded".into()
+                                                    } else {
+                                                        "invalid credentials".into()
+                                                    },
                                                     data: Vec::new(),
                                                 }
                                             }
