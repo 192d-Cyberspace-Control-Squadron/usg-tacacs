@@ -28,7 +28,7 @@ use usg_tacacs_proto::{
     AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS,
     AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII,
     AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL,
-    AUTHOR_STATUS_PASS_ADD, ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, AccountingResponse, AccountingRequest, AuthSessionState, AuthenData, AuthenPacket,
+    AUTHOR_STATUS_PASS_ADD, ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, AccountingResponse, AccountingRequest, AuthorizationRequest, AuthSessionState, AuthenData, AuthenPacket,
     AuthenReply, AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
     validate_author_response_header, write_accounting_response, write_authen_reply,
     write_author_response,
@@ -88,6 +88,19 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     }
     if has_status {
         parse_u32("status")?;
+    }
+    Ok(())
+}
+
+fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), &'static str> {
+    if !req.has_service_attr() {
+        return Err("authorization missing service attribute");
+    }
+    if req.is_shell_start() {
+        return Ok(());
+    }
+    if !req.has_cmd_attrs() {
+        return Err("authorization missing command attributes");
     }
     Ok(())
 }
@@ -299,46 +312,56 @@ where
                         break;
                     }
                 }
-                let decision = {
-                    let policy = policy.read().await;
-                    if request.is_shell_start() {
-                        let attrs = policy
-                            .shell_attributes_for(&request.user)
-                            .unwrap_or_default();
-                        AuthorizationResponse {
-                            status: AUTHOR_STATUS_PASS_ADD,
-                            server_msg: String::new(),
-                            data: String::new(),
-                            args: attrs,
-                        }
-                    } else if !request.has_cmd_attrs() || !request.has_service_attr() {
-                        AuthorizationResponse {
-                            status: AUTHOR_STATUS_ERROR,
-                            server_msg: "missing required command/service attributes".to_string(),
-                            data: String::new(),
-                            args: Vec::new(),
-                        }
-                    } else if let Some(cmd) = request.command_string() {
-                        let decision = policy.authorize(&request.user, &cmd);
-                        if decision.allowed {
+                let decision = match validate_authorization_semantics(&request) {
+                    Ok(()) => {
+                        let policy = policy.read().await;
+                        if request.is_shell_start() {
+                            let attrs = policy
+                                .shell_attributes_for(&request.user)
+                                .unwrap_or_default();
                             AuthorizationResponse {
                                 status: AUTHOR_STATUS_PASS_ADD,
                                 server_msg: String::new(),
                                 data: String::new(),
-                                args: Vec::new(),
+                                args: attrs,
+                            }
+                        } else if let Some(cmd) = request.command_string() {
+                            let decision = policy.authorize(&request.user, &cmd);
+                            if decision.allowed {
+                                AuthorizationResponse {
+                                    status: AUTHOR_STATUS_PASS_ADD,
+                                    server_msg: String::new(),
+                                    data: String::new(),
+                                    args: Vec::new(),
+                                }
+                            } else {
+                                AuthorizationResponse {
+                                    status: AUTHOR_STATUS_FAIL,
+                                    server_msg: "command denied".to_string(),
+                                    data: String::new(),
+                                    args: Vec::new(),
+                                }
                             }
                         } else {
                             AuthorizationResponse {
-                                status: AUTHOR_STATUS_FAIL,
-                                server_msg: "command denied".to_string(),
+                                status: AUTHOR_STATUS_ERROR,
+                                server_msg: "unsupported request".to_string(),
                                 data: String::new(),
                                 args: Vec::new(),
                             }
                         }
-                    } else {
+                    }
+                    Err(msg) => {
+                        warn!(
+                            peer = %peer,
+                            user = %request.user,
+                            session = request.header.session_id,
+                            reason = %msg,
+                            "authorization request rejected by semantic checks"
+                        );
                         AuthorizationResponse {
                             status: AUTHOR_STATUS_ERROR,
-                            server_msg: "unsupported request".to_string(),
+                            server_msg: msg.to_string(),
                             data: String::new(),
                             args: Vec::new(),
                         }
