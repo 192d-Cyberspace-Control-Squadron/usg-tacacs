@@ -11,6 +11,43 @@
         "items": { "type": "string" }
       }
     },
+    "ascii_prompts": {
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "password": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "ascii_user_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-user overrides for username prompt; keys are usernames (case-insensitive)."
+    },
+    "ascii_password_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-user overrides for password prompt; keys are usernames (case-insensitive)."
+    },
+    "ascii_port_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-port overrides for username prompt; keys are port strings."
+    },
+    "ascii_remaddr_prompts": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Per-remote-address overrides for username prompt; keys are rem_addr strings."
+    },
+    "ascii_messages": {
+      "type": "object",
+      "properties": {
+        "success": { "type": "string" },
+        "failure": { "type": "string" },
+        "abort": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
     "rules": {
       "type": "array",
       "items": {

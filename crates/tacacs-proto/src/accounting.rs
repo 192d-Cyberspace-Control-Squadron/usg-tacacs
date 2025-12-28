@@ -3,7 +3,7 @@
 
 use crate::header::Header;
 use crate::util::{parse_attributes, read_string, validate_attributes};
-use crate::{ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG};
+use crate::{ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, ACCT_STATUS_ERROR, ACCT_STATUS_FOLLOW, ACCT_STATUS_SUCCESS};
 use anyhow::{Result, anyhow, ensure};
 use bytes::{BufMut, BytesMut};
 
@@ -36,6 +36,10 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
     let priv_lvl = body[2];
     let authen_type = body[3];
     let authen_service = body[4];
+    ensure!((1..=8).contains(&authen_method), "accounting authen_method invalid");
+    ensure!(authen_type <= 0x04, "accounting authen_type invalid");
+    ensure!(authen_service <= 0x07, "accounting authen_service invalid");
+    ensure!(priv_lvl <= 0x0f, "accounting priv_lvl invalid");
     let user_len = body[5] as usize;
     let port_len = body[6] as usize;
     let rem_addr_len = body[7] as usize;
@@ -103,6 +107,24 @@ impl AccountingRequest {
 }
 
 pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u8>> {
+    ensure!(
+        response.status == ACCT_STATUS_SUCCESS
+            || response.status == ACCT_STATUS_ERROR
+            || response.status == ACCT_STATUS_FOLLOW,
+        "accounting response status invalid"
+    );
+    ensure!(
+        response.args.len() <= u8::MAX as usize,
+        "too many accounting response args"
+    );
+    ensure!(
+        response.server_msg.len() <= u16::MAX as usize,
+        "accounting server_msg too long"
+    );
+    ensure!(
+        response.data.len() <= u16::MAX as usize,
+        "accounting data too long"
+    );
     let mut buf: BytesMut = BytesMut::new();
     buf.put_u8(response.status);
     buf.put_u16(response.server_msg.len() as u16);

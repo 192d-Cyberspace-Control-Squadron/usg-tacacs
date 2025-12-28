@@ -9,6 +9,23 @@ pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -
         .unwrap_or(false)
 }
 
+pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &HashMap<String, String>) -> bool {
+    creds
+        .get(user)
+        .map(|stored| stored.as_bytes() == password)
+        .unwrap_or(false)
+}
+
+pub fn verify_pap_bytes_username(
+    username: &[u8],
+    password: &[u8],
+    creds: &HashMap<String, String>,
+) -> bool {
+    creds
+        .iter()
+        .any(|(u, p)| u.as_bytes() == username && p.as_bytes() == password)
+}
+
 pub fn compute_chap_response(
     user: &str,
     creds: &HashMap<String, String>,

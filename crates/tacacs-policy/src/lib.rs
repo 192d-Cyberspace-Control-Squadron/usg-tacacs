@@ -30,7 +30,32 @@ pub struct PolicyDocument {
     #[serde(default)]
     pub shell_start: HashMap<String, Vec<String>>,
     #[serde(default)]
+    pub ascii_prompts: Option<AsciiPrompts>,
+    #[serde(default)]
+    pub ascii_user_prompts: HashMap<String, String>,
+    #[serde(default)]
+    pub ascii_password_prompts: HashMap<String, String>,
+    #[serde(default)]
+    pub ascii_port_prompts: HashMap<String, String>,
+    #[serde(default)]
+    pub ascii_remaddr_prompts: HashMap<String, String>,
+    #[serde(default)]
+    pub ascii_messages: Option<AsciiMessages>,
+    #[serde(default)]
     pub rules: Vec<RuleConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AsciiPrompts {
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AsciiMessages {
+    pub success: Option<String>,
+    pub failure: Option<String>,
+    pub abort: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +72,12 @@ pub struct Rule {
 pub struct PolicyEngine {
     default_allow: bool,
     shell_start: HashMap<String, Vec<String>>,
+    ascii_prompts: Option<AsciiPrompts>,
+    ascii_user_prompts: HashMap<String, String>,
+    ascii_password_prompts: HashMap<String, String>,
+    ascii_port_prompts: HashMap<String, String>,
+    ascii_remaddr_prompts: HashMap<String, String>,
+    ascii_messages: Option<AsciiMessages>,
     rules: Vec<Rule>,
 }
 
@@ -102,6 +133,20 @@ impl PolicyEngine {
         Ok(Self {
             default_allow: document.default_allow,
             shell_start,
+            ascii_prompts: document.ascii_prompts,
+            ascii_user_prompts: document
+                .ascii_user_prompts
+                .into_iter()
+                .map(|(u, p)| (u.to_lowercase(), p))
+                .collect(),
+            ascii_password_prompts: document
+                .ascii_password_prompts
+                .into_iter()
+                .map(|(u, p)| (u.to_lowercase(), p))
+                .collect(),
+            ascii_port_prompts: document.ascii_port_prompts,
+            ascii_remaddr_prompts: document.ascii_remaddr_prompts,
+            ascii_messages: document.ascii_messages,
             rules,
         })
     }
@@ -141,6 +186,66 @@ impl PolicyEngine {
 
     pub fn shell_attributes_for(&self, user: &str) -> Option<Vec<String>> {
         self.shell_start.get(&user.to_lowercase()).cloned()
+    }
+
+    pub fn prompt_username(&self, user: Option<&str>, port: Option<&str>, rem_addr: Option<&str>) -> Option<&str> {
+        if let Some(user) = user {
+            if let Some(custom) = self.ascii_user_prompts.get(&user.to_lowercase()) {
+                return Some(custom.as_str());
+            }
+        }
+        if let Some(port) = port {
+            if let Some(custom) = self.ascii_port_prompts.get(port) {
+                return Some(custom.as_str());
+            }
+        }
+        if let Some(rem) = rem_addr {
+            if let Some(custom) = self.ascii_remaddr_prompts.get(rem) {
+                return Some(custom.as_str());
+            }
+        }
+        self.ascii_prompts
+            .as_ref()
+            .and_then(|p| p.username.as_deref())
+    }
+
+    pub fn prompt_password(&self, user: Option<&str>) -> Option<&str> {
+        if let Some(user) = user {
+            if let Some(custom) = self.ascii_password_prompts.get(&user.to_lowercase()) {
+                return Some(custom.as_str());
+            }
+        }
+        self.ascii_prompts
+            .as_ref()
+            .and_then(|p| p.password.as_deref())
+    }
+
+    /// Hook for observing raw server messages from auth replies (currently a no-op).
+    pub fn observe_server_msg(
+        &self,
+        _user: Option<&str>,
+        _port: Option<&str>,
+        _rem_addr: Option<&str>,
+        _raw: &[u8],
+    ) {
+    }
+
+    pub fn message_success(&self) -> Option<&str> {
+        self.ascii_messages
+            .as_ref()
+            .and_then(|m| m.success.as_deref())
+    }
+
+    pub fn message_failure(&self) -> Option<&str> {
+        self.ascii_messages
+            .as_ref()
+            .and_then(|m| m.failure.as_deref())
+    }
+
+    pub fn message_abort(&self) -> Option<&str> {
+        self.ascii_messages
+            .as_ref()
+            .and_then(|m| m.abort.as_deref())
     }
 }
 

@@ -58,6 +58,18 @@ pub struct Args {
     /// Maximum ASCII authentication attempts before failing the session (0 = unlimited).
     #[arg(long, default_value_t = 5)]
     pub ascii_attempt_limit: u8,
+
+    /// Maximum username prompts for ASCII auth before failing the session (0 = unlimited).
+    #[arg(long, default_value_t = 3)]
+    pub ascii_user_attempt_limit: u8,
+
+    /// Maximum password prompts for ASCII auth before failing the session (0 = unlimited).
+    #[arg(long, default_value_t = 5)]
+    pub ascii_pass_attempt_limit: u8,
+
+    /// Base backoff (ms) before repeating ASCII username/password prompts (0 = no delay).
+    #[arg(long, default_value_t = 0)]
+    pub ascii_backoff_ms: u64,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {

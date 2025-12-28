@@ -1,4 +1,4 @@
-use crate::auth::{compute_chap_response, verify_pap};
+use crate::auth::{compute_chap_response, verify_pap, verify_pap_bytes, verify_pap_bytes_username};
 use crate::config::{Args, credentials_map};
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result, bail};
@@ -8,11 +8,13 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::RwLock;
+use tokio::time::sleep;
 use tokio_rustls::TlsAcceptor;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
     ACCT_STATUS_ERROR, ACCT_STATUS_SUCCESS, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR,
@@ -25,6 +27,37 @@ use usg_tacacs_proto::{
     write_author_response,
 };
 const AUTHEN_CONT_ABORT: u8 = 0x01;
+
+fn calc_ascii_backoff(base_ms: u64, attempt: u8) -> Option<Duration> {
+    if base_ms == 0 {
+        return None;
+    }
+    let linear = base_ms.saturating_mul(attempt.max(1) as u64);
+    let mut jitter = 0;
+    let mut buf = [0u8; 2];
+    if rand_bytes(&mut buf).is_ok() {
+        let max_jitter = base_ms.min(5_000);
+        jitter = (u16::from_be_bytes(buf) as u64) % (max_jitter + 1);
+    }
+    Some(Duration::from_millis(linear.saturating_add(jitter)))
+}
+
+fn username_for_policy<'a>(
+    decoded: Option<&'a str>,
+    raw: Option<&'a Vec<u8>>,
+) -> Option<String> {
+    if let Some(u) = decoded {
+        return Some(u.to_string());
+    }
+    raw.map(|bytes| hex::encode(bytes))
+}
+
+fn field_for_policy<'a>(decoded: Option<&'a str>, raw: Option<&'a Vec<u8>>) -> Option<String> {
+    if let Some(v) = decoded {
+        return Some(v.to_string());
+    }
+    raw.map(|bytes| hex::encode(bytes))
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -91,6 +124,9 @@ async fn main() -> Result<()> {
         let secret = shared_secret.clone();
         let credentials = credentials.clone();
         let ascii_attempt_limit = args.ascii_attempt_limit;
+        let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
+        let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
+        let ascii_backoff_ms = args.ascii_backoff_ms;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -99,6 +135,9 @@ async fn main() -> Result<()> {
                 secret,
                 credentials,
                 ascii_attempt_limit,
+                ascii_user_attempt_limit,
+                ascii_pass_attempt_limit,
+                ascii_backoff_ms,
             )
             .await
             {
@@ -121,9 +160,22 @@ async fn main() -> Result<()> {
         let secret = shared_secret.clone();
         let credentials = credentials.clone();
         let ascii_attempt_limit = args.ascii_attempt_limit;
+        let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
+        let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
+        let ascii_backoff_ms = args.ascii_backoff_ms;
         handles.push(tokio::spawn(async move {
             if let Err(err) =
-                serve_legacy(addr, policy, secret, credentials, ascii_attempt_limit).await
+                serve_legacy(
+                    addr,
+                    policy,
+                    secret,
+                    credentials,
+                    ascii_attempt_limit,
+                    ascii_user_attempt_limit,
+                    ascii_pass_attempt_limit,
+                    ascii_backoff_ms,
+                )
+                .await
             {
                 error!(error = %err, "legacy listener stopped");
             }
@@ -155,6 +207,9 @@ async fn serve_tls(
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
     ascii_attempt_limit: u8,
+    ascii_user_attempt_limit: u8,
+    ascii_pass_attempt_limit: u8,
+    ascii_backoff_ms: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -166,6 +221,9 @@ async fn serve_tls(
         let policy = policy.clone();
         let secret = secret.clone();
         let credentials = credentials.clone();
+        let ascii_user_attempt_limit = ascii_user_attempt_limit;
+        let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
+        let ascii_backoff_ms = ascii_backoff_ms;
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(stream) => {
@@ -176,6 +234,9 @@ async fn serve_tls(
                         secret,
                         credentials,
                         ascii_attempt_limit,
+                        ascii_user_attempt_limit,
+                        ascii_pass_attempt_limit,
+                        ascii_backoff_ms,
                     )
                     .await
                     {
@@ -194,6 +255,9 @@ async fn serve_legacy(
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
     ascii_attempt_limit: u8,
+    ascii_user_attempt_limit: u8,
+    ascii_pass_attempt_limit: u8,
+    ascii_backoff_ms: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -205,6 +269,9 @@ async fn serve_legacy(
         let secret = secret.clone();
         let credentials = credentials.clone();
         let ascii_attempt_limit = ascii_attempt_limit;
+        let ascii_user_attempt_limit = ascii_user_attempt_limit;
+        let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
+        let ascii_backoff_ms = ascii_backoff_ms;
         tokio::spawn(async move {
             if let Err(err) = handle_connection(
                 socket,
@@ -213,6 +280,9 @@ async fn serve_legacy(
                 secret,
                 credentials,
                 ascii_attempt_limit,
+                ascii_user_attempt_limit,
+                ascii_pass_attempt_limit,
+                ascii_backoff_ms,
             )
             .await
             {
@@ -229,6 +299,9 @@ async fn handle_connection<S>(
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
     ascii_attempt_limit: u8,
+    ascii_user_attempt_limit: u8,
+    ascii_pass_attempt_limit: u8,
+    ascii_backoff_ms: u64,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -387,6 +460,7 @@ where
                         status: AUTHEN_STATUS_ERROR,
                         flags: 0,
                         server_msg: "single-connection flag required after authentication".into(),
+                        server_msg_raw: Vec::new(),
                         data: Vec::new(),
                     };
                     let _ = write_authen_reply(
@@ -407,6 +481,7 @@ where
                                     status: AUTHEN_STATUS_ERROR,
                                     flags: 0,
                                     server_msg: "single-connection user mismatch".into(),
+                                    server_msg_raw: Vec::new(),
                                     data: Vec::new(),
                                 };
                                 let _ = write_authen_reply(
@@ -424,6 +499,7 @@ where
                                 status: AUTHEN_STATUS_ERROR,
                                 flags: 0,
                                 server_msg: "single-connection not authenticated".into(),
+                                server_msg_raw: Vec::new(),
                                 data: Vec::new(),
                             };
                             let _ = write_authen_reply(
@@ -441,6 +517,7 @@ where
                                 status: AUTHEN_STATUS_ERROR,
                                 flags: 0,
                                 server_msg: "single-connection already authenticated".into(),
+                                server_msg_raw: Vec::new(),
                                 data: Vec::new(),
                             };
                             let _ = write_authen_reply(
@@ -467,19 +544,49 @@ where
                             &start.header,
                             start.authen_type,
                             start.user.clone(),
+                            start.user_raw.clone(),
+                            start.port.clone(),
+                            start.port_raw.clone(),
+                            start.rem_addr.clone(),
+                            start.rem_addr_raw.clone(),
                             start.service,
+                            start.action,
                         )
                         .unwrap_or(AuthSessionState {
                             last_seq: start.header.seq_no,
                             expect_client: false,
                             authen_type: Some(start.authen_type),
                             challenge: None,
-                            username: Some(start.user.clone()),
+                            username: if start.user_raw.is_empty() || start.user.is_empty() {
+                                None
+                            } else {
+                                Some(start.user.clone())
+                            },
+                            username_raw: if start.user_raw.is_empty() {
+                                None
+                            } else {
+                                Some(start.user_raw.clone())
+                            },
+                            port_raw: Some(start.port_raw.clone()),
+                            port: if start.port_raw.is_empty() || start.port.is_empty() {
+                                None
+                            } else {
+                                Some(start.port.clone())
+                            },
+                            rem_addr_raw: Some(start.rem_addr_raw.clone()),
+                            rem_addr: if start.rem_addr_raw.is_empty() || start.rem_addr.is_empty() {
+                                None
+                            } else {
+                                Some(start.rem_addr.clone())
+                            },
                             ascii_need_user: false,
                             ascii_need_pass: false,
                             chap_id: None,
                             ascii_attempts: 0,
+                            ascii_user_attempts: 0,
+                            ascii_pass_attempts: 0,
                             service: Some(start.service),
+                            action: Some(start.action),
                         }),
                         AuthenPacket::Continue(_) => AuthSessionState {
                             last_seq: 0,
@@ -487,11 +594,19 @@ where
                             authen_type: None,
                             challenge: None,
                             username: None,
+                            username_raw: None,
+                            port_raw: None,
+                            port: None,
+                            rem_addr_raw: None,
+                            rem_addr: None,
                             ascii_need_user: false,
                             ascii_need_pass: false,
                             chap_id: None,
                             ascii_attempts: 0,
+                            ascii_user_attempts: 0,
+                            ascii_pass_attempts: 0,
                             service: None,
+                            action: None,
                         },
                     });
                 if let AuthenPacket::Continue(ref cont) = packet {
@@ -505,78 +620,141 @@ where
                         AUTHEN_TYPE_ASCII => {
                             state.authen_type = Some(AUTHEN_TYPE_ASCII);
                             state.service = Some(start.service);
-                            let username_prompt =
-                                |client_msg: Option<&[u8]>, service: Option<u8>| {
-                                    if let Some(msg) = client_msg {
-                                        if !msg.is_empty() {
-                                            return String::from_utf8_lossy(msg).to_string();
-                                        }
-                                    }
-                                    service
-                                        .map(|svc| format!("Username (service {svc}):"))
-                                        .unwrap_or_else(|| "Username:".into())
-                                };
-                            let password_prompt =
-                                |client_msg: Option<&[u8]>, service: Option<u8>| {
-                                    if let Some(msg) = client_msg {
-                                        if !msg.is_empty() {
-                                            return String::from_utf8_lossy(msg).to_string();
-                                        }
-                                    }
-                                    service
-                                        .map(|svc| format!("Password (service {svc}):"))
-                                        .unwrap_or_else(|| "Password:".into())
-                                };
-                            state.username = if start.user.is_empty() {
+                            state.action = Some(start.action);
+                            let decoded_username = if start.user_raw.is_empty() {
+                                None
+                            } else if start.user.is_empty() {
                                 None
                             } else {
                                 Some(start.user.clone())
                             };
+                            state.username = decoded_username;
+                            state.username_raw = if start.user_raw.is_empty() {
+                                None
+                            } else {
+                                Some(start.user_raw.clone())
+                            };
+                            let (policy_user_prompt, policy_pass_prompt) = {
+                                let policy = policy.read().await;
+                                let policy_user = username_for_policy(
+                                    state.username.as_deref(),
+                                    state.username_raw.as_ref(),
+                                );
+                                let policy_port =
+                                    field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
+                                let policy_rem =
+                                    field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
+                                (
+                                    policy
+                                        .prompt_username(
+                                            policy_user.as_deref(),
+                                            policy_port.as_deref(),
+                                            policy_rem.as_deref(),
+                                        )
+                                        .map(|s| s.as_bytes().to_vec()),
+                                    policy
+                                        .prompt_password(policy_user.as_deref())
+                                        .map(|s| s.as_bytes().to_vec()),
+                                )
+                            };
+                            let username_prompt =
+                                |client_msg: Option<&[u8]>, service: Option<u8>| -> Vec<u8> {
+                                    if let Some(msg) = client_msg {
+                                        if !msg.is_empty() {
+                                            return msg.to_vec();
+                                        }
+                                    }
+                                    if let Some(custom) = policy_user_prompt.as_ref() {
+                                        return custom.clone();
+                                    }
+                                    match service {
+                                        Some(svc) => format!("Username (service {svc}):").into_bytes(),
+                                        None => b"Username:".to_vec(),
+                                    }
+                                };
+                            let password_prompt =
+                                |client_msg: Option<&[u8]>, service: Option<u8>| -> Vec<u8> {
+                                    if let Some(msg) = client_msg {
+                                        if !msg.is_empty() {
+                                            return msg.to_vec();
+                                        }
+                                    }
+                                    if let Some(custom) = policy_pass_prompt.as_ref() {
+                                        return custom.clone();
+                                    }
+                                    match service {
+                                        Some(svc) => format!("Password (service {svc}):").into_bytes(),
+                                        None => b"Password:".to_vec(),
+                                    }
+                                };
                             state.ascii_need_user = state.username.is_none();
                             if state.ascii_need_user {
                                 AuthenReply {
                                     status: AUTHEN_STATUS_GETUSER,
                                     flags: 0,
-                                    server_msg: username_prompt(None, state.service),
-                                    data: Vec::new(),
+                                    server_msg: String::new(),
+                                    server_msg_raw: Vec::new(),
+                                    data: username_prompt(None, state.service),
                                 }
                             } else if !start.data.is_empty() {
-                                match String::from_utf8(start.data.clone()) {
-                                    Ok(password) => {
-                                        let ok = verify_pap(
-                                            state.username.as_deref().unwrap_or_default(),
-                                            &password,
-                                            &credentials,
-                                        );
-                                        AuthenReply {
-                                            status: if ok {
-                                                AUTHEN_STATUS_PASS
-                                            } else {
-                                                AUTHEN_STATUS_FAIL
-                                            },
-                                            flags: 0,
-                                            server_msg: if ok {
-                                                "authentication succeeded".into()
-                                            } else {
-                                                "invalid credentials".into()
-                                            },
-                                            data: Vec::new(),
-                                        }
+                                let ok = if let Some(raw) = state.username_raw.as_ref() {
+                                    verify_pap_bytes_username(raw, &start.data, &credentials)
+                                } else {
+                                    verify_pap_bytes(
+                                        state.username.as_deref().unwrap_or_default(),
+                                        &start.data,
+                                        &credentials,
+                                    )
+                                };
+                                if !ok {
+                                    if let Some(delay) =
+                                        calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
+                                    {
+                                        sleep(delay).await;
                                     }
-                                    Err(_) => AuthenReply {
-                                        status: AUTHEN_STATUS_ERROR,
-                                        flags: 0,
-                                        server_msg: "invalid password encoding".into(),
-                                        data: Vec::new(),
+                                }
+                                let svc_str = state
+                                    .service
+                                    .map(|svc| format!(" (service {svc})"))
+                                    .unwrap_or_default();
+                                let act_str = state
+                                    .action
+                                    .map(|act| format!(" action {act}"))
+                                    .unwrap_or_default();
+                                let policy = policy.read().await;
+                                AuthenReply {
+                                    status: if ok {
+                                        AUTHEN_STATUS_PASS
+                                    } else {
+                                        AUTHEN_STATUS_FAIL
                                     },
+                                    flags: 0,
+                                    server_msg: if ok {
+                                        policy
+                                            .message_success()
+                                            .map(|m| m.to_string())
+                                            .unwrap_or_else(|| {
+                                                format!("authentication succeeded{svc_str}{act_str}")
+                                            })
+                                    } else {
+                                        policy
+                                            .message_failure()
+                                            .map(|m| m.to_string())
+                                            .unwrap_or_else(|| {
+                                                format!("invalid credentials{svc_str}{act_str}")
+                                            })
+                                    },
+                                    server_msg_raw: Vec::new(),
+                                    data: Vec::new(),
                                 }
                             } else {
                                 state.ascii_need_pass = true;
                                 AuthenReply {
                                     status: AUTHEN_STATUS_GETPASS,
                                     flags: AUTHEN_FLAG_NOECHO,
-                                    server_msg: password_prompt(None, state.service),
-                                    data: Vec::new(),
+                                    server_msg: String::new(),
+                                    server_msg_raw: Vec::new(),
+                                    data: password_prompt(None, state.service),
                                 }
                             }
                         }
@@ -594,6 +772,7 @@ where
                                 },
                                 flags: 0,
                                 server_msg: String::new(),
+                                server_msg_raw: Vec::new(),
                                 data: Vec::new(),
                             }
                         }
@@ -610,6 +789,7 @@ where
                                     status: AUTHEN_STATUS_ERROR,
                                     flags: 0,
                                     server_msg: "failed to generate challenge".into(),
+                                    server_msg_raw: Vec::new(),
                                     data: Vec::new(),
                                 }
                             } else {
@@ -619,6 +799,7 @@ where
                                     status: AUTHEN_STATUS_GETDATA,
                                     flags: 0,
                                     server_msg: String::new(),
+                                    server_msg_raw: Vec::new(),
                                     data: {
                                         let mut payload = Vec::with_capacity(1 + chal_len);
                                         payload.extend_from_slice(&chap_id);
@@ -632,124 +813,239 @@ where
                             status: AUTHEN_STATUS_FOLLOW,
                             flags: 0,
                             server_msg: "unsupported auth type - fallback".into(),
+                            server_msg_raw: Vec::new(),
                             data: Vec::new(),
                         },
                     },
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
+                            let (policy_user_prompt, policy_pass_prompt) = {
+                                let policy = policy.read().await;
+                                let policy_user = username_for_policy(
+                                    state.username.as_deref(),
+                                    state.username_raw.as_ref(),
+                                );
+                                let policy_port =
+                                    field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
+                                let policy_rem = field_for_policy(
+                                    state.rem_addr.as_deref(),
+                                    state.rem_addr_raw.as_ref(),
+                                );
+                                (
+                                    policy
+                                        .prompt_username(
+                                            policy_user.as_deref(),
+                                            policy_port.as_deref(),
+                                            policy_rem.as_deref(),
+                                        )
+                                        .map(|s| s.as_bytes().to_vec()),
+                                    policy
+                                        .prompt_password(policy_user.as_deref())
+                                        .map(|s| s.as_bytes().to_vec()),
+                                )
+                            };
                             let uname_prompt = if !cont.user_msg.is_empty() {
-                                String::from_utf8_lossy(&cont.user_msg).to_string()
+                                cont.user_msg.clone()
+                            } else if let Some(custom) = policy_user_prompt {
+                                custom
                             } else {
-                                state
-                                    .service
-                                    .map(|svc| format!("Username (service {svc}):"))
-                                    .unwrap_or_else(|| "Username:".into())
+                                match (state.service, state.action) {
+                                    (Some(svc), Some(act)) => {
+                                        format!("Username (service {svc}, action {act}):").into_bytes()
+                                    }
+                                    (Some(svc), None) => format!("Username (service {svc}):").into_bytes(),
+                                    _ => b"Username:".to_vec(),
+                                }
                             };
                             let pwd_prompt = if !cont.user_msg.is_empty() {
-                                String::from_utf8_lossy(&cont.user_msg).to_string()
+                                cont.user_msg.clone()
+                            } else if let Some(custom) = policy_pass_prompt {
+                                custom
                             } else {
-                                state
-                                    .service
-                                    .map(|svc| format!("Password (service {svc}):"))
-                                    .unwrap_or_else(|| "Password:".into())
+                                match (state.service, state.action) {
+                                    (Some(svc), Some(act)) => {
+                                        format!("Password (service {svc}, action {act}):").into_bytes()
+                                    }
+                                    (Some(svc), None) => format!("Password (service {svc}):").into_bytes(),
+                                    _ => b"Password:".to_vec(),
+                                }
                             };
-                            if ascii_attempt_limit > 0
+
+                            if cont.flags & AUTHEN_CONT_ABORT != 0 {
+                                state.ascii_need_user = true;
+                                state.ascii_need_pass = false;
+                                state.username = None;
+                                state.username_raw = None;
+                                state.ascii_attempts = 0;
+                                state.ascii_user_attempts = 0;
+                                state.ascii_pass_attempts = 0;
+                                let policy_abort = {
+                                    let policy = policy.read().await;
+                                    policy.message_abort().map(|m| m.to_string())
+                                };
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: policy_abort
+                                        .unwrap_or_else(|| "authentication aborted".into()),
+                                    server_msg_raw: Vec::new(),
+                                    data: Vec::new(),
+                                }
+                            } else if ascii_attempt_limit > 0
                                 && state.ascii_attempts >= ascii_attempt_limit
                             {
                                 AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
                                     server_msg: "too many authentication attempts".into(),
+                                    server_msg_raw: Vec::new(),
+                                    data: Vec::new(),
+                                }
+                            } else if state.ascii_need_user
+                                && ascii_user_attempt_limit > 0
+                                && state.ascii_user_attempts >= ascii_user_attempt_limit
+                            {
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: "too many username attempts".into(),
+                                    server_msg_raw: Vec::new(),
+                                    data: Vec::new(),
+                                }
+                            } else if state.ascii_need_pass
+                                && ascii_pass_attempt_limit > 0
+                                && state.ascii_pass_attempts >= ascii_pass_attempt_limit
+                            {
+                                AuthenReply {
+                                    status: AUTHEN_STATUS_FAIL,
+                                    flags: 0,
+                                    server_msg: "too many password attempts".into(),
+                                    server_msg_raw: Vec::new(),
                                     data: Vec::new(),
                                 }
                             } else {
                                 if ascii_attempt_limit > 0 {
                                     state.ascii_attempts = state.ascii_attempts.saturating_add(1);
                                 }
-                                if cont.flags & AUTHEN_CONT_ABORT != 0 {
-                                    state.ascii_need_user = true;
-                                    state.ascii_need_pass = false;
-                                    state.username = None;
-                                    state.ascii_attempts = 0;
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_FAIL,
-                                        flags: 0,
-                                        server_msg: "authentication aborted".into(),
-                                        data: Vec::new(),
-                                    }
-                                } else if state.ascii_need_user {
-                                    match String::from_utf8(cont.data.clone()) {
-                                        Ok(username) if !username.is_empty() => {
-                                            state.username = Some(username);
-                                            state.ascii_need_user = false;
-                                            state.ascii_need_pass = true;
-                                            AuthenReply {
-                                                status: AUTHEN_STATUS_GETPASS,
-                                                flags: AUTHEN_FLAG_NOECHO,
-                                                server_msg: pwd_prompt.clone(),
-                                                data: Vec::new(),
-                                            }
+
+                                if state.ascii_need_user {
+                                    state.ascii_user_attempts =
+                                        state.ascii_user_attempts.saturating_add(1);
+                                    let username_raw = cont.data.clone();
+                                    if !username_raw.is_empty() {
+                                        state.username_raw = Some(username_raw.clone());
+                                        state.username =
+                                            String::from_utf8(username_raw).ok();
+                                        state.ascii_need_user = false;
+                                        state.ascii_need_pass = true;
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETPASS,
+                                            flags: AUTHEN_FLAG_NOECHO,
+                                            server_msg: String::new(),
+                                            server_msg_raw: Vec::new(),
+                                            data: pwd_prompt.clone(),
                                         }
-                                        Ok(_) => AuthenReply {
+                                    } else {
+                                        if let Some(delay) =
+                                            calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
+                                        {
+                                            sleep(delay).await;
+                                        }
+                                        AuthenReply {
                                             status: AUTHEN_STATUS_GETUSER,
                                             flags: 0,
-                                            server_msg: uname_prompt.clone(),
-                                            data: Vec::new(),
-                                        },
-                                        Err(_) => AuthenReply {
-                                            status: AUTHEN_STATUS_ERROR,
-                                            flags: 0,
-                                            server_msg: "invalid username encoding".into(),
-                                            data: Vec::new(),
-                                        },
+                                            server_msg: String::new(),
+                                            server_msg_raw: Vec::new(),
+                                            data: uname_prompt.clone(),
+                                        }
                                     }
                                 } else if state.ascii_need_pass {
-                                    match String::from_utf8(cont.data.clone()) {
-                                        Ok(password) => {
-                                            if password.is_empty() {
-                                                AuthenReply {
-                                                    status: AUTHEN_STATUS_GETPASS,
-                                                    flags: AUTHEN_FLAG_NOECHO,
-                                                    server_msg: pwd_prompt.clone(),
-                                                    data: Vec::new(),
-                                                }
-                                            } else {
-                                                state.ascii_need_pass = false;
-                                                let user =
-                                                    state.username.clone().unwrap_or_default();
-                                                let ok = verify_pap(&user, &password, &credentials);
-                                                AuthenReply {
-                                                    status: if ok {
-                                                        AUTHEN_STATUS_PASS
-                                                    } else {
-                                                        AUTHEN_STATUS_FAIL
-                                                    },
-                                                    flags: 0, // clear NOECHO after decision
-                                                    server_msg: if ok {
-                                                        "authentication succeeded".into()
-                                                    } else {
-                                                        "invalid credentials".into()
-                                                    },
-                                                    data: Vec::new(),
-                                                }
+                                    state.ascii_pass_attempts =
+                                        state.ascii_pass_attempts.saturating_add(1);
+                                    if cont.data.is_empty() {
+                                        if let Some(delay) =
+                                            calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
+                                        {
+                                            sleep(delay).await;
+                                        }
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETPASS,
+                                            flags: AUTHEN_FLAG_NOECHO,
+                                            server_msg: String::new(),
+                                            server_msg_raw: Vec::new(),
+                                            data: pwd_prompt.clone(),
+                                        }
+                                    } else {
+                                        state.ascii_need_pass = false;
+                                        let ok = if let Some(raw_user) = state.username_raw.as_ref()
+                                        {
+                                            verify_pap_bytes_username(
+                                                raw_user,
+                                                &cont.data,
+                                                &credentials,
+                                            )
+                                        } else {
+                                            let user = state.username.clone().unwrap_or_default();
+                                            verify_pap_bytes(&user, &cont.data, &credentials)
+                                        };
+                                        let svc_str = state
+                                            .service
+                                            .map(|svc| format!(" (service {svc})"))
+                                            .unwrap_or_default();
+                                            let act_str = state
+                                                .action
+                                                .map(|act| format!(" action {act}"))
+                                                .unwrap_or_default();
+                                        let policy = policy.read().await;
+                                        if !ok {
+                                            if let Some(delay) = calc_ascii_backoff(
+                                                ascii_backoff_ms,
+                                                state.ascii_attempts,
+                                            ) {
+                                                sleep(delay).await;
                                             }
                                         }
-                                        Err(_) => AuthenReply {
-                                            status: AUTHEN_STATUS_ERROR,
-                                            flags: 0,
-                                            server_msg: "invalid password encoding".into(),
+                                        AuthenReply {
+                                            status: if ok {
+                                                AUTHEN_STATUS_PASS
+                                            } else {
+                                                AUTHEN_STATUS_FAIL
+                                            },
+                                            flags: 0, // clear NOECHO after decision
+                                            server_msg: if ok {
+                                                policy
+                                                    .message_success()
+                                                    .map(|m| m.to_string())
+                                                    .unwrap_or_else(|| {
+                                                        format!(
+                                                            "authentication succeeded{svc_str}{act_str}"
+                                                        )
+                                                    })
+                                            } else {
+                                                policy
+                                                    .message_failure()
+                                                    .map(|m| m.to_string())
+                                                    .unwrap_or_else(|| {
+                                                        format!("invalid credentials{svc_str}{act_str}")
+                                                    })
+                                            },
+                                            server_msg_raw: Vec::new(),
                                             data: Vec::new(),
-                                        },
+                                        }
                                     }
                                 } else {
                                     state.ascii_need_user = true;
                                     state.ascii_need_pass = false;
                                     state.username = None;
+                                    state.username_raw = None;
                                     state.ascii_attempts = 0;
+                                    state.ascii_user_attempts = 0;
+                                    state.ascii_pass_attempts = 0;
                                     AuthenReply {
                                         status: AUTHEN_STATUS_RESTART,
                                         flags: 0,
                                         server_msg: "restart authentication".into(),
+                                        server_msg_raw: Vec::new(),
                                         data: Vec::new(),
                                     }
                                 }
@@ -764,6 +1060,7 @@ where
                                             status: AUTHEN_STATUS_ERROR,
                                             flags: 0,
                                             server_msg: "invalid CHAP continue length".into(),
+                                            server_msg_raw: Vec::new(),
                                             data: Vec::new(),
                                         }
                                     } else if state.chap_id.is_some()
@@ -773,6 +1070,7 @@ where
                                             status: AUTHEN_STATUS_FAIL,
                                             flags: 0,
                                             server_msg: "CHAP identifier mismatch".into(),
+                                            server_msg_raw: Vec::new(),
                                             data: Vec::new(),
                                         }
                                     } else if let Some(expected) = compute_chap_response(
@@ -788,6 +1086,7 @@ where
                                                 status: AUTHEN_STATUS_PASS,
                                                 flags: 0,
                                                 server_msg: String::new(),
+                                                server_msg_raw: Vec::new(),
                                                 data: Vec::new(),
                                             }
                                         } else {
@@ -795,6 +1094,7 @@ where
                                                 status: AUTHEN_STATUS_FAIL,
                                                 flags: 0,
                                                 server_msg: "invalid CHAP response".into(),
+                                                server_msg_raw: Vec::new(),
                                                 data: Vec::new(),
                                             }
                                         }
@@ -803,6 +1103,7 @@ where
                                             status: AUTHEN_STATUS_ERROR,
                                             flags: 0,
                                             server_msg: "missing credentials".into(),
+                                            server_msg_raw: Vec::new(),
                                             data: Vec::new(),
                                         }
                                     }
@@ -811,6 +1112,7 @@ where
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
                                     server_msg: "unexpected continue".into(),
+                                    server_msg_raw: Vec::new(),
                                     data: Vec::new(),
                                 },
                             }
@@ -822,6 +1124,7 @@ where
                                 "unexpected authentication continue (flags {:02x})",
                                 cont.flags
                             ),
+                            server_msg_raw: Vec::new(),
                             data: Vec::new(),
                         },
                     },
@@ -853,6 +1156,32 @@ where
                 )
                 .await
                 .with_context(|| "sending TACACS+ auth reply")?;
+                if !reply.server_msg_raw.is_empty() {
+                    {
+                        let policy = policy.read().await;
+                        let policy_user = username_for_policy(
+                            state.username.as_deref(),
+                            state.username_raw.as_ref(),
+                        );
+                        let policy_port =
+                            field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
+                        let policy_rem =
+                            field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
+                        policy.observe_server_msg(
+                            policy_user.as_deref(),
+                            policy_port.as_deref(),
+                            policy_rem.as_deref(),
+                            &reply.server_msg_raw,
+                        );
+                    }
+                    debug!(
+                        peer = %peer,
+                        session = session_id,
+                        raw_len = reply.server_msg_raw.len(),
+                        server_msg_raw_hex = %hex::encode(&reply.server_msg_raw),
+                        "auth reply carried raw server_msg bytes"
+                    );
+                }
                 if terminal {
                     auth_states.remove(&session_id);
                     if reply.status != AUTHEN_STATUS_PASS {

@@ -3,8 +3,13 @@
 
 use crate::header::Header;
 use crate::util::read_bytes;
-use crate::{AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP};
-use anyhow::{Context, Result, ensure};
+use crate::{
+    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
+    AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
+    AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ARAP, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
+};
+use anyhow::{ensure, Result};
+use std::borrow::Cow;
 use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
@@ -14,8 +19,11 @@ pub struct AuthenStart {
     pub priv_lvl: u8,
     pub authen_type: u8,
     pub service: u8,
+    pub user_raw: Vec<u8>,
     pub user: String,
+    pub port_raw: Vec<u8>,
     pub port: String,
+    pub rem_addr_raw: Vec<u8>,
     pub rem_addr: String,
     pub data: Vec<u8>,
 }
@@ -33,7 +41,19 @@ pub struct AuthenReply {
     pub status: u8,
     pub flags: u8,
     pub server_msg: String,
+    pub server_msg_raw: Vec<u8>,
     pub data: Vec<u8>,
+}
+
+impl AuthenReply {
+    /// Returns the server_msg as raw bytes, preferring the raw buffer when present.
+    pub fn server_msg_bytes(&self) -> Cow<'_, [u8]> {
+        if !self.server_msg_raw.is_empty() {
+            Cow::Borrowed(self.server_msg_raw.as_slice())
+        } else {
+            Cow::Owned(self.server_msg.as_bytes().to_vec())
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,11 +76,19 @@ pub struct AuthSessionState {
     pub authen_type: Option<u8>,
     pub challenge: Option<Vec<u8>>,
     pub username: Option<String>,
+    pub username_raw: Option<Vec<u8>>,
+    pub port_raw: Option<Vec<u8>>,
+    pub port: Option<String>,
+    pub rem_addr_raw: Option<Vec<u8>>,
+    pub rem_addr: Option<String>,
     pub chap_id: Option<u8>,
     pub ascii_need_user: bool,
     pub ascii_need_pass: bool,
     pub ascii_attempts: u8,
+    pub ascii_user_attempts: u8,
+    pub ascii_pass_attempts: u8,
     pub service: Option<u8>,
+    pub action: Option<u8>,
 }
 
 impl AuthSessionState {
@@ -68,7 +96,13 @@ impl AuthSessionState {
         header: &Header,
         authen_type: u8,
         username: String,
+        username_raw: Vec<u8>,
+        port: String,
+        port_raw: Vec<u8>,
+        rem_addr: String,
+        rem_addr_raw: Vec<u8>,
         service: u8,
+        action: u8,
     ) -> Result<Self> {
         ensure!(header.seq_no % 2 == 1, "auth start must use odd seq");
         Ok(Self {
@@ -77,11 +111,27 @@ impl AuthSessionState {
             authen_type: Some(authen_type),
             challenge: None,
             username: Some(username),
+            username_raw: Some(username_raw),
+            port_raw: Some(port_raw.clone()),
+            port: if port_raw.is_empty() || port.is_empty() {
+                None
+            } else {
+                Some(port)
+            },
+            rem_addr_raw: Some(rem_addr_raw.clone()),
+            rem_addr: if rem_addr_raw.is_empty() || rem_addr.is_empty() {
+                None
+            } else {
+                Some(rem_addr)
+            },
             chap_id: None,
             ascii_need_user: false,
             ascii_need_pass: false,
             ascii_attempts: 0,
+            ascii_user_attempts: 0,
+            ascii_pass_attempts: 0,
             service: Some(service),
+            action: Some(action),
         })
     }
 
@@ -132,6 +182,19 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
         header.seq_no % 2 == 1,
         "authentication client packets must use odd seq"
     );
+    ensure!(
+        body[0] == 0x01 || body[0] == 0x02,
+        "invalid authen action (only login/enable allowed)"
+    );
+    ensure!(body[1] <= 0x0f, "invalid priv_lvl");
+    ensure!(
+        body[2] == AUTHEN_TYPE_ASCII
+            || body[2] == AUTHEN_TYPE_PAP
+            || body[2] == AUTHEN_TYPE_CHAP
+            || body[2] == AUTHEN_TYPE_ARAP,
+        "invalid authen_type"
+    );
+    // service is opaque in RFC; only ensure it fits in a byte already done by parsing
     if body.len() >= 8 {
         let user_len = body[4] as usize;
         let port_len = body[5] as usize;
@@ -140,11 +203,17 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
         let expected = 8 + user_len + port_len + rem_addr_len + data_len;
         if expected <= body.len() {
             let mut cursor = 8;
-            let (user, next) = read_bytes(body, cursor, user_len, "user")?;
+            let (user_bytes, next) = read_bytes(body, cursor, user_len, "user")?;
+            let user_raw = user_bytes.clone();
+            let user = String::from_utf8(user_bytes).unwrap_or_default();
             cursor = next;
-            let (port, next) = read_bytes(body, cursor, port_len, "port")?;
+            let (port_bytes, next) = read_bytes(body, cursor, port_len, "port")?;
+            let port_raw = port_bytes.clone();
+            let port = String::from_utf8(port_bytes).unwrap_or_default();
             cursor = next;
-            let (rem_addr, next) = read_bytes(body, cursor, rem_addr_len, "rem_addr")?;
+            let (rem_addr_bytes, next) = read_bytes(body, cursor, rem_addr_len, "rem_addr")?;
+            let rem_addr_raw = rem_addr_bytes.clone();
+            let rem_addr = String::from_utf8(rem_addr_bytes).unwrap_or_default();
             cursor = next;
             let (data, _) = read_bytes(body, cursor, data_len, "data")?;
 
@@ -154,9 +223,12 @@ pub fn parse_authen_body(header: Header, body: &[u8]) -> Result<AuthenPacket> {
                 priv_lvl: body[1],
                 authen_type: body[2],
                 service: body[3],
-                user: String::from_utf8(user).context("decoding user")?,
-                port: String::from_utf8(port).context("decoding port")?,
-                rem_addr: String::from_utf8(rem_addr).context("decoding rem_addr")?,
+                user_raw,
+                user,
+                port_raw,
+                port,
+                rem_addr_raw,
+                rem_addr,
                 data,
             }));
         }
@@ -183,9 +255,14 @@ pub fn encode_authen_reply(reply: &AuthenReply) -> Result<Vec<u8>> {
     let mut buf = BytesMut::new();
     buf.put_u8(reply.status);
     buf.put_u8(reply.flags);
-    buf.put_u16(reply.server_msg.len() as u16);
+    let msg_bytes = if reply.server_msg_raw.is_empty() {
+        reply.server_msg.as_bytes()
+    } else {
+        reply.server_msg_raw.as_slice()
+    };
+    buf.put_u16(msg_bytes.len() as u16);
     buf.put_u16(reply.data.len() as u16);
-    buf.extend_from_slice(reply.server_msg.as_bytes());
+    buf.extend_from_slice(msg_bytes);
     buf.extend_from_slice(&reply.data);
     Ok(buf.to_vec())
 }
@@ -194,6 +271,21 @@ pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {
     ensure!(body.len() >= 6, "authentication reply body too short");
     let status = body[0];
     let flags = body[1];
+    ensure!(
+        matches!(
+            status,
+            AUTHEN_STATUS_PASS
+                | AUTHEN_STATUS_FAIL
+                | AUTHEN_STATUS_GETDATA
+                | AUTHEN_STATUS_GETUSER
+                | AUTHEN_STATUS_GETPASS
+                | AUTHEN_STATUS_RESTART
+                | AUTHEN_STATUS_ERROR
+                | AUTHEN_STATUS_FOLLOW
+        ),
+        "invalid authen status"
+    );
+    ensure!(flags & !(AUTHEN_FLAG_NOECHO) == 0, "invalid authen reply flags");
     let msg_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let data_len = u16::from_be_bytes([body[4], body[5]]) as usize;
     let expected = 6 + msg_len + data_len;
@@ -201,14 +293,16 @@ pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {
         expected <= body.len(),
         "authentication reply exceeds body length"
     );
-    let server_msg = String::from_utf8(body[6..6 + msg_len].to_vec())
-        .context("decoding authen reply server_msg")?;
+    let server_msg_bytes = body[6..6 + msg_len].to_vec();
+    let server_msg = String::from_utf8(server_msg_bytes.clone())
+        .unwrap_or_else(|_| format!("(non-utf8 {} bytes)", server_msg_bytes.len()));
     let data = body[6 + msg_len..expected].to_vec();
 
     Ok(AuthenReply {
         status,
         flags,
         server_msg,
+        server_msg_raw: server_msg_bytes,
         data,
     })
 }

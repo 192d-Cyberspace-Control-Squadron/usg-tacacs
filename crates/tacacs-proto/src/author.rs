@@ -5,6 +5,7 @@ use crate::header::Header;
 use crate::util::validate_attributes;
 use crate::util::{parse_attributes, read_string};
 use anyhow::{Result, anyhow, ensure};
+use crate::{AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AUTHOR_STATUS_PASS_REPL};
 use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone)]
@@ -87,6 +88,10 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
     let priv_lvl = body[1];
     let authen_type = body[2];
     let authen_service = body[3];
+    ensure!((1..=8).contains(&authen_method), "authorization authen_method invalid");
+    ensure!(authen_type <= 0x04, "authorization authen_type invalid");
+    ensure!(authen_service <= 0x07, "authorization authen_service invalid");
+    ensure!(priv_lvl <= 0x0f, "authorization priv_lvl invalid");
     let user_len = body[4] as usize;
     let port_len = body[5] as usize;
     let rem_addr_len = body[6] as usize;
@@ -141,6 +146,25 @@ pub fn parse_author_body(header: Header, body: &[u8]) -> Result<AuthorizationReq
 }
 
 pub fn encode_author_response(response: &AuthorizationResponse) -> Result<Vec<u8>> {
+    ensure!(
+        response.status == AUTHOR_STATUS_PASS_REPL
+            || response.status == AUTHOR_STATUS_PASS_ADD
+            || response.status == AUTHOR_STATUS_FAIL
+            || response.status == AUTHOR_STATUS_ERROR,
+        "authorization response status invalid"
+    );
+    ensure!(
+        response.args.len() <= u8::MAX as usize,
+        "too many authorization response args"
+    );
+    ensure!(
+        response.server_msg.len() <= u16::MAX as usize,
+        "authorization server_msg too long"
+    );
+    ensure!(
+        response.data.len() <= u16::MAX as usize,
+        "authorization data too long"
+    );
     let mut buf = BytesMut::new();
     buf.put_u8(response.status);
     buf.put_u8(response.args.len() as u8);
