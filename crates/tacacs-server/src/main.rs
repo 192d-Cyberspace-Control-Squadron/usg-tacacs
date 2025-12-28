@@ -211,6 +211,7 @@ where
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect_user: Option<String> = None;
     let mut single_connect_active = false;
+    let mut single_connect_locked = false;
     loop {
         match read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice())).await {
             Ok(Some(Packet::Authorization(request))) => {
@@ -378,6 +379,37 @@ where
                                 .await;
                                 continue;
                             }
+                        } else {
+                            let reply = AuthenReply {
+                                status: AUTHEN_STATUS_ERROR,
+                                flags: 0,
+                                server_msg: "single-connection not authenticated".into(),
+                                data: Vec::new(),
+                            };
+                            let _ = write_authen_reply(
+                                &mut stream,
+                                &start.header,
+                                &reply,
+                                secret.as_deref().map(|s| s.as_slice()),
+                            )
+                            .await;
+                            continue;
+                        }
+                        if single_connect_locked {
+                            let reply = AuthenReply {
+                                status: AUTHEN_STATUS_ERROR,
+                                flags: 0,
+                                server_msg: "single-connection already authenticated".into(),
+                                data: Vec::new(),
+                            };
+                            let _ = write_authen_reply(
+                                &mut stream,
+                                &start.header,
+                                &reply,
+                                secret.as_deref().map(|s| s.as_slice()),
+                            )
+                            .await;
+                            continue;
                         }
                     }
                 }
@@ -678,12 +710,14 @@ where
                     if reply.status != AUTHEN_STATUS_PASS {
                         single_connect_active = false;
                         single_connect_user = None;
+                        single_connect_locked = false;
                     }
                 }
                 if matches!(reply.status, AUTHEN_STATUS_PASS) && single_connect {
                     if let Some(user) = single_user {
                         single_connect_user = Some(user);
                         single_connect_active = true;
+                        single_connect_locked = true;
                     }
                 }
             }
