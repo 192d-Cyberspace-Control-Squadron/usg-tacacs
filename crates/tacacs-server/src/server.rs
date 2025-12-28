@@ -291,6 +291,8 @@ pub async fn serve_legacy(
         let ascii_backoff_ms = ascii_backoff_ms;
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
+        let single_connect_idle_secs = single_connect_idle_secs;
+        let single_connect_keepalive_secs = single_connect_keepalive_secs;
         tokio::spawn(async move {
             if let Err(err) = handle_connection(
                 socket,
