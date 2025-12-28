@@ -90,8 +90,18 @@ async fn main() -> Result<()> {
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
         let credentials = credentials.clone();
+        let ascii_attempt_limit = args.ascii_attempt_limit;
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_tls(addr, acceptor, policy, secret, credentials).await {
+            if let Err(err) = serve_tls(
+                addr,
+                acceptor,
+                policy,
+                secret,
+                credentials,
+                ascii_attempt_limit,
+            )
+            .await
+            {
                 error!(error = %err, "TLS listener stopped");
             }
         }));
@@ -110,8 +120,11 @@ async fn main() -> Result<()> {
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
         let credentials = credentials.clone();
+        let ascii_attempt_limit = args.ascii_attempt_limit;
         handles.push(tokio::spawn(async move {
-            if let Err(err) = serve_legacy(addr, policy, secret, credentials).await {
+            if let Err(err) =
+                serve_legacy(addr, policy, secret, credentials, ascii_attempt_limit).await
+            {
                 error!(error = %err, "legacy listener stopped");
             }
         }));
@@ -141,6 +154,7 @@ async fn serve_tls(
     policy: Arc<RwLock<PolicyEngine>>,
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
+    ascii_attempt_limit: u8,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -161,6 +175,7 @@ async fn serve_tls(
                         format!("{peer_addr}"),
                         secret,
                         credentials,
+                        ascii_attempt_limit,
                     )
                     .await
                     {
@@ -178,6 +193,7 @@ async fn serve_legacy(
     policy: Arc<RwLock<PolicyEngine>>,
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
+    ascii_attempt_limit: u8,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -188,9 +204,17 @@ async fn serve_legacy(
         let policy = policy.clone();
         let secret = secret.clone();
         let credentials = credentials.clone();
+        let ascii_attempt_limit = ascii_attempt_limit;
         tokio::spawn(async move {
-            if let Err(err) =
-                handle_connection(socket, policy, format!("{peer_addr}"), secret, credentials).await
+            if let Err(err) = handle_connection(
+                socket,
+                policy,
+                format!("{peer_addr}"),
+                secret,
+                credentials,
+                ascii_attempt_limit,
+            )
+            .await
             {
                 warn!(error = %err, peer = %peer_addr, "connection closed with error");
             }
@@ -204,6 +228,7 @@ async fn handle_connection<S>(
     peer: String,
     secret: Option<Arc<Vec<u8>>>,
     credentials: Arc<HashMap<String, String>>,
+    ascii_attempt_limit: u8,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -452,6 +477,7 @@ where
                             ascii_need_user: false,
                             ascii_need_pass: false,
                             chap_id: None,
+                            ascii_attempts: 0,
                         }),
                         AuthenPacket::Continue(_) => AuthSessionState {
                             last_seq: 0,
@@ -462,6 +488,7 @@ where
                             ascii_need_user: false,
                             ascii_need_pass: false,
                             chap_id: None,
+                            ascii_attempts: 0,
                         },
                     });
                 if let AuthenPacket::Continue(ref cont) = packet {
@@ -577,68 +604,82 @@ where
                     },
                     AuthenPacket::Continue(ref cont) => match state.authen_type {
                         Some(AUTHEN_TYPE_ASCII) => {
-                            if cont.flags & AUTHEN_CONT_ABORT != 0 {
-                                state.ascii_need_user = true;
-                                state.ascii_need_pass = false;
-                                state.username = None;
+                            if ascii_attempt_limit > 0
+                                && state.ascii_attempts >= ascii_attempt_limit
+                            {
                                 AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
-                                    server_msg: "authentication aborted".into(),
+                                    server_msg: "too many authentication attempts".into(),
                                     data: Vec::new(),
-                                }
-                            } else if state.ascii_need_user {
-                                let username = String::from_utf8_lossy(&cont.data).to_string();
-                                if !username.is_empty() {
-                                    state.username = Some(username);
-                                    state.ascii_need_user = false;
-                                    state.ascii_need_pass = true;
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_GETPASS,
-                                        flags: AUTHEN_FLAG_NOECHO,
-                                        server_msg: "Password:".into(),
-                                        data: Vec::new(),
-                                    }
-                                } else {
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_GETUSER,
-                                        flags: 0,
-                                        server_msg: "Username:".into(),
-                                        data: Vec::new(),
-                                    }
-                                }
-                            } else if state.ascii_need_pass {
-                                let password = String::from_utf8_lossy(&cont.data).to_string();
-                                if password.is_empty() {
-                                    AuthenReply {
-                                        status: AUTHEN_STATUS_GETPASS,
-                                        flags: AUTHEN_FLAG_NOECHO,
-                                        server_msg: "Password:".into(),
-                                        data: Vec::new(),
-                                    }
-                                } else {
-                                    state.ascii_need_pass = false;
-                                    let user = state.username.clone().unwrap_or_default();
-                                    AuthenReply {
-                                        status: if verify_pap(&user, &password, &credentials) {
-                                            AUTHEN_STATUS_PASS
-                                        } else {
-                                            AUTHEN_STATUS_FAIL
-                                        },
-                                        flags: 0,
-                                        server_msg: String::new(),
-                                        data: Vec::new(),
-                                    }
                                 }
                             } else {
-                                state.ascii_need_user = true;
-                                state.ascii_need_pass = false;
-                                state.username = None;
-                                AuthenReply {
-                                    status: AUTHEN_STATUS_RESTART,
-                                    flags: 0,
-                                    server_msg: "restart authentication".into(),
-                                    data: Vec::new(),
+                                if ascii_attempt_limit > 0 {
+                                    state.ascii_attempts = state.ascii_attempts.saturating_add(1);
+                                }
+                                if cont.flags & AUTHEN_CONT_ABORT != 0 {
+                                    state.ascii_need_user = true;
+                                    state.ascii_need_pass = false;
+                                    state.username = None;
+                                    AuthenReply {
+                                        status: AUTHEN_STATUS_FAIL,
+                                        flags: 0,
+                                        server_msg: "authentication aborted".into(),
+                                        data: Vec::new(),
+                                    }
+                                } else if state.ascii_need_user {
+                                    let username = String::from_utf8_lossy(&cont.data).to_string();
+                                    if !username.is_empty() {
+                                        state.username = Some(username);
+                                        state.ascii_need_user = false;
+                                        state.ascii_need_pass = true;
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETPASS,
+                                            flags: AUTHEN_FLAG_NOECHO,
+                                            server_msg: "Password:".into(),
+                                            data: Vec::new(),
+                                        }
+                                    } else {
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETUSER,
+                                            flags: 0,
+                                            server_msg: "Username:".into(),
+                                            data: Vec::new(),
+                                        }
+                                    }
+                                } else if state.ascii_need_pass {
+                                    let password = String::from_utf8_lossy(&cont.data).to_string();
+                                    if password.is_empty() {
+                                        AuthenReply {
+                                            status: AUTHEN_STATUS_GETPASS,
+                                            flags: AUTHEN_FLAG_NOECHO,
+                                            server_msg: "Password:".into(),
+                                            data: Vec::new(),
+                                        }
+                                    } else {
+                                        state.ascii_need_pass = false;
+                                        let user = state.username.clone().unwrap_or_default();
+                                        AuthenReply {
+                                            status: if verify_pap(&user, &password, &credentials) {
+                                                AUTHEN_STATUS_PASS
+                                            } else {
+                                                AUTHEN_STATUS_FAIL
+                                            },
+                                            flags: 0,
+                                            server_msg: String::new(),
+                                            data: Vec::new(),
+                                        }
+                                    }
+                                } else {
+                                    state.ascii_need_user = true;
+                                    state.ascii_need_pass = false;
+                                    state.username = None;
+                                    AuthenReply {
+                                        status: AUTHEN_STATUS_RESTART,
+                                        flags: 0,
+                                        server_msg: "restart authentication".into(),
+                                        data: Vec::new(),
+                                    }
                                 }
                             }
                         }

@@ -54,6 +54,10 @@ pub struct Args {
     /// Static user:password pairs for PAP/CHAP verification (repeatable).
     #[arg(long, value_parser = parse_user_password, value_name = "USER:PASS")]
     pub user_password: Vec<(String, String)>,
+
+    /// Maximum ASCII authentication attempts before failing the session (0 = unlimited).
+    #[arg(long, default_value_t = 5)]
+    pub ascii_attempt_limit: u8,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {

@@ -59,6 +59,7 @@ pub struct AuthSessionState {
     pub chap_id: Option<u8>,
     pub ascii_need_user: bool,
     pub ascii_need_pass: bool,
+    pub ascii_attempts: u8,
 }
 
 impl AuthSessionState {
@@ -73,6 +74,7 @@ impl AuthSessionState {
             chap_id: None,
             ascii_need_user: false,
             ascii_need_pass: false,
+            ascii_attempts: 0,
         })
     }
 
