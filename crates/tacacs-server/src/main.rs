@@ -28,20 +28,21 @@ use usg_tacacs_proto::{
 };
 const AUTHEN_CONT_ABORT: u8 = 0x01;
 
-fn calc_ascii_backoff(base_ms: u64, attempt: u8) -> Option<Duration> {
+fn calc_ascii_backoff_capped(base_ms: u64, attempt: u8, cap_ms: u64) -> Option<Duration> {
     if base_ms == 0 {
         return None;
     }
-    let linear = base_ms.saturating_mul(attempt.max(1) as u64);
+    // exponential backoff: base * 2^(attempt-1)
+    let exp = base_ms.saturating_mul(1u64 << attempt.saturating_sub(1));
+    let capped = if cap_ms == 0 { exp } else { exp.min(cap_ms) };
     let mut jitter = 0;
     let mut buf = [0u8; 2];
     if rand_bytes(&mut buf).is_ok() {
         let max_jitter = base_ms.min(5_000);
         jitter = (u16::from_be_bytes(buf) as u64) % (max_jitter + 1);
     }
-    Some(Duration::from_millis(linear.saturating_add(jitter)))
+    Some(Duration::from_millis(capped.saturating_add(jitter)))
 }
-
 fn username_for_policy<'a>(
     decoded: Option<&'a str>,
     raw: Option<&'a Vec<u8>>,
@@ -91,6 +92,8 @@ async fn main() -> Result<()> {
         }
     }
     let credentials: Arc<HashMap<String, String>> = Arc::new(credentials_map(&args));
+    let ascii_backoff_max_ms = args.ascii_backoff_max_ms;
+    let ascii_lockout_limit = args.ascii_lockout_limit;
 
     let mut handles = Vec::new();
 
@@ -127,6 +130,8 @@ async fn main() -> Result<()> {
         let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
         let ascii_backoff_ms = args.ascii_backoff_ms;
+        let ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let ascii_lockout_limit = ascii_lockout_limit;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -138,6 +143,8 @@ async fn main() -> Result<()> {
                 ascii_user_attempt_limit,
                 ascii_pass_attempt_limit,
                 ascii_backoff_ms,
+                ascii_backoff_max_ms,
+                ascii_lockout_limit,
             )
             .await
             {
@@ -163,6 +170,8 @@ async fn main() -> Result<()> {
         let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
         let ascii_backoff_ms = args.ascii_backoff_ms;
+        let ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let ascii_lockout_limit = ascii_lockout_limit;
         handles.push(tokio::spawn(async move {
             if let Err(err) =
                 serve_legacy(
@@ -174,6 +183,8 @@ async fn main() -> Result<()> {
                     ascii_user_attempt_limit,
                     ascii_pass_attempt_limit,
                     ascii_backoff_ms,
+                    ascii_backoff_max_ms,
+                    ascii_lockout_limit,
                 )
                 .await
             {
@@ -210,6 +221,8 @@ async fn serve_tls(
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
     ascii_backoff_ms: u64,
+    ascii_backoff_max_ms: u64,
+    ascii_lockout_limit: u8,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -224,6 +237,8 @@ async fn serve_tls(
         let ascii_user_attempt_limit = ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
         let ascii_backoff_ms = ascii_backoff_ms;
+        let ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let ascii_lockout_limit = ascii_lockout_limit;
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(stream) => {
@@ -237,6 +252,8 @@ async fn serve_tls(
                         ascii_user_attempt_limit,
                         ascii_pass_attempt_limit,
                         ascii_backoff_ms,
+                        ascii_backoff_max_ms,
+                        ascii_lockout_limit,
                     )
                     .await
                     {
@@ -258,6 +275,8 @@ async fn serve_legacy(
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
     ascii_backoff_ms: u64,
+    ascii_backoff_max_ms: u64,
+    ascii_lockout_limit: u8,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -272,6 +291,8 @@ async fn serve_legacy(
         let ascii_user_attempt_limit = ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
         let ascii_backoff_ms = ascii_backoff_ms;
+        let ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let ascii_lockout_limit = ascii_lockout_limit;
         tokio::spawn(async move {
             if let Err(err) = handle_connection(
                 socket,
@@ -283,6 +304,8 @@ async fn serve_legacy(
                 ascii_user_attempt_limit,
                 ascii_pass_attempt_limit,
                 ascii_backoff_ms,
+                ascii_backoff_max_ms,
+                ascii_lockout_limit,
             )
             .await
             {
@@ -302,6 +325,8 @@ async fn handle_connection<S>(
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
     ascii_backoff_ms: u64,
+    ascii_backoff_max_ms: u64,
+    ascii_lockout_limit: u8,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -615,7 +640,7 @@ where
                     }
                 }
 
-                let reply = match packet {
+                let mut reply = match packet {
                     AuthenPacket::Start(ref start) => match start.authen_type {
                         AUTHEN_TYPE_ASCII => {
                             state.authen_type = Some(AUTHEN_TYPE_ASCII);
@@ -708,7 +733,11 @@ where
                                 };
                                 if !ok {
                                     if let Some(delay) =
-                                        calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
+                                        calc_ascii_backoff_capped(
+                                            ascii_backoff_ms,
+                                            state.ascii_attempts,
+                                            ascii_backoff_max_ms,
+                                        )
                                     {
                                         sleep(delay).await;
                                     }
@@ -927,6 +956,17 @@ where
                                 if ascii_attempt_limit > 0 {
                                     state.ascii_attempts = state.ascii_attempts.saturating_add(1);
                                 }
+                                if ascii_lockout_limit > 0
+                                    && state.ascii_attempts >= ascii_lockout_limit
+                                {
+                                    AuthenReply {
+                                        status: AUTHEN_STATUS_FAIL,
+                                        flags: 0,
+                                        server_msg: "authentication locked out".into(),
+                                        server_msg_raw: Vec::new(),
+                                        data: Vec::new(),
+                                    }
+                                } else {
 
                                 if state.ascii_need_user {
                                     state.ascii_user_attempts =
@@ -947,7 +987,11 @@ where
                                         }
                                     } else {
                                         if let Some(delay) =
-                                            calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
+                                            calc_ascii_backoff_capped(
+                                                ascii_backoff_ms,
+                                                state.ascii_attempts,
+                                                ascii_backoff_max_ms,
+                                            )
                                         {
                                             sleep(delay).await;
                                         }
@@ -963,9 +1007,11 @@ where
                                     state.ascii_pass_attempts =
                                         state.ascii_pass_attempts.saturating_add(1);
                                     if cont.data.is_empty() {
-                                        if let Some(delay) =
-                                            calc_ascii_backoff(ascii_backoff_ms, state.ascii_attempts)
-                                        {
+                                        if let Some(delay) = calc_ascii_backoff_capped(
+                                            ascii_backoff_ms,
+                                            state.ascii_attempts,
+                                            ascii_backoff_max_ms,
+                                        ) {
                                             sleep(delay).await;
                                         }
                                         AuthenReply {
@@ -996,17 +1042,18 @@ where
                                                 .action
                                                 .map(|act| format!(" action {act}"))
                                                 .unwrap_or_default();
-                                        let policy = policy.read().await;
-                                        if !ok {
-                                            if let Some(delay) = calc_ascii_backoff(
-                                                ascii_backoff_ms,
-                                                state.ascii_attempts,
-                                            ) {
-                                                sleep(delay).await;
+                                            let policy = policy.read().await;
+                                            if !ok {
+                                                if let Some(delay) = calc_ascii_backoff_capped(
+                                                    ascii_backoff_ms,
+                                                    state.ascii_attempts,
+                                                    ascii_backoff_max_ms,
+                                                ) {
+                                                    sleep(delay).await;
+                                                }
                                             }
-                                        }
-                                        AuthenReply {
-                                            status: if ok {
+                                            AuthenReply {
+                                                status: if ok {
                                                 AUTHEN_STATUS_PASS
                                             } else {
                                                 AUTHEN_STATUS_FAIL
@@ -1049,6 +1096,7 @@ where
                                         data: Vec::new(),
                                     }
                                 }
+                            }
                             }
                         }
                         _ if state.challenge.is_some() => {
@@ -1167,12 +1215,20 @@ where
                             field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
                         let policy_rem =
                             field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
-                        policy.observe_server_msg(
+                        if !policy.observe_server_msg(
                             policy_user.as_deref(),
                             policy_port.as_deref(),
                             policy_rem.as_deref(),
+                            state.service,
+                            state.action,
                             &reply.server_msg_raw,
-                        );
+                        ) {
+                            reply.status = AUTHEN_STATUS_FAIL;
+                            reply.flags = 0;
+                            reply.server_msg = "server message blocked by policy".into();
+                            reply.server_msg_raw.clear();
+                            reply.data.clear();
+                        }
                     }
                     debug!(
                         peer = %peer,

@@ -70,6 +70,14 @@ pub struct Args {
     /// Base backoff (ms) before repeating ASCII username/password prompts (0 = no delay).
     #[arg(long, default_value_t = 0)]
     pub ascii_backoff_ms: u64,
+
+    /// Maximum backoff (ms) for ASCII prompt retries (0 = no cap).
+    #[arg(long, default_value_t = 5000)]
+    pub ascii_backoff_max_ms: u64,
+
+    /// Lock out ASCII auth after this many attempts (0 = no lockout).
+    #[arg(long, default_value_t = 0)]
+    pub ascii_lockout_limit: u8,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {
