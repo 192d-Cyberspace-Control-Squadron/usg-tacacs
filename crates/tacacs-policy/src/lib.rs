@@ -1,8 +1,8 @@
 use anyhow::{Context, Result, anyhow};
+use hex;
 use jsonschema::{Draft, JSONSchema};
 use regex::Regex;
 use serde::Deserialize;
-use hex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -234,7 +234,12 @@ impl PolicyEngine {
         self.shell_start.get(&user.to_lowercase()).cloned()
     }
 
-    pub fn prompt_username(&self, user: Option<&str>, port: Option<&str>, rem_addr: Option<&str>) -> Option<&str> {
+    pub fn prompt_username(
+        &self,
+        user: Option<&str>,
+        port: Option<&str>,
+        rem_addr: Option<&str>,
+    ) -> Option<&str> {
         if let Some(user) = user {
             if let Some(custom) = self.ascii_user_prompts.get(&user.to_lowercase()) {
                 return Some(custom.as_str());
@@ -284,7 +289,9 @@ impl PolicyEngine {
         }
         let hex = hex::encode(raw).to_lowercase();
         if let Some(user) = user {
-            if let Some(override_policy) = self.raw_server_msg_user_overrides.get(&user.to_lowercase()) {
+            if let Some(override_policy) =
+                self.raw_server_msg_user_overrides.get(&user.to_lowercase())
+            {
                 if let Some(allow) = override_policy.allow {
                     if !allow {
                         return false;

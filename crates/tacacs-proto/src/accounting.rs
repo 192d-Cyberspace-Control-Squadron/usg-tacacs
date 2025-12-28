@@ -3,7 +3,10 @@
 
 use crate::header::Header;
 use crate::util::{parse_attributes, read_string, validate_attributes};
-use crate::{ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, ACCT_STATUS_ERROR, ACCT_STATUS_FOLLOW, ACCT_STATUS_SUCCESS};
+use crate::{
+    ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, ACCT_STATUS_ERROR, ACCT_STATUS_FOLLOW,
+    ACCT_STATUS_SUCCESS,
+};
 use anyhow::{Result, anyhow, ensure};
 use bytes::{BufMut, BytesMut};
 
@@ -36,7 +39,10 @@ pub fn parse_accounting_body(header: Header, body: &[u8]) -> Result<AccountingRe
     let priv_lvl = body[2];
     let authen_type = body[3];
     let authen_service = body[4];
-    ensure!((1..=8).contains(&authen_method), "accounting authen_method invalid");
+    ensure!(
+        (1..=8).contains(&authen_method),
+        "accounting authen_method invalid"
+    );
     ensure!(authen_type <= 0x04, "accounting authen_type invalid");
     ensure!(authen_service <= 0x07, "accounting authen_service invalid");
     ensure!(priv_lvl <= 0x0f, "accounting priv_lvl invalid");

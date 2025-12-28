@@ -339,10 +339,19 @@ pub fn validate_accounting_response_header(header: &Header) -> Result<()> {
 
 /// Validate an outgoing authorization request against basic RFC 8907 semantics.
 pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
-    ensure!((1..=8).contains(&req.authen_method), "authorization authen_method invalid");
+    ensure!(
+        (1..=8).contains(&req.authen_method),
+        "authorization authen_method invalid"
+    );
     ensure!(req.priv_lvl <= 0x0f, "authorization priv_lvl invalid");
-    ensure!(req.authen_type <= AUTHEN_TYPE_ARAP, "authorization authen_type invalid");
-    ensure!(req.authen_service <= 0x07, "authorization authen_service invalid");
+    ensure!(
+        req.authen_type <= AUTHEN_TYPE_ARAP,
+        "authorization authen_type invalid"
+    );
+    ensure!(
+        req.authen_service <= 0x07,
+        "authorization authen_service invalid"
+    );
 
     let attrs = req.attributes();
     let service_attrs: Vec<_> = attrs
@@ -447,7 +456,10 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
         "accounting authen_method invalid"
     );
     ensure!(req.authen_type <= 0x04, "accounting authen_type invalid");
-    ensure!(req.authen_service <= 0x07, "accounting authen_service invalid");
+    ensure!(
+        req.authen_service <= 0x07,
+        "accounting authen_service invalid"
+    );
     ensure!(req.priv_lvl <= 0x0f, "accounting priv_lvl invalid");
 
     let valid_mask: u8 = ACCT_FLAG_START | ACCT_FLAG_STOP | ACCT_FLAG_WATCHDOG;
@@ -476,15 +488,11 @@ pub fn validate_accounting_request(req: &AccountingRequest) -> Result<()> {
         "accounting requires service or command attributes"
     );
 
-    let has_task = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("task_id"));
+    let has_task = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("task_id"));
     let has_elapsed = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
-    let has_status = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("status"));
+    let has_status = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("status"));
     let has_bytes_in = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
@@ -598,7 +606,9 @@ where
     ensure!(body.len() >= 5, "accounting response too short");
     let status = body[0];
     ensure!(
-        status == ACCT_STATUS_SUCCESS || status == ACCT_STATUS_ERROR || status == ACCT_STATUS_FOLLOW,
+        status == ACCT_STATUS_SUCCESS
+            || status == ACCT_STATUS_ERROR
+            || status == ACCT_STATUS_FOLLOW,
         "accounting response status invalid"
     );
     if status == ACCT_STATUS_FOLLOW {

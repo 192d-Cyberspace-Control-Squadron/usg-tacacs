@@ -3,7 +3,7 @@ use crate::ascii::{field_for_policy, username_for_policy};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use usg_tacacs_policy::PolicyEngine;
-use usg_tacacs_proto::{AuthSessionState, AuthenReply, AUTHEN_STATUS_FAIL};
+use usg_tacacs_proto::{AUTHEN_STATUS_FAIL, AuthSessionState, AuthenReply};
 
 /// Enforce server_msg_raw policy; clears/denies reply if blocked.
 pub async fn enforce_server_msg(

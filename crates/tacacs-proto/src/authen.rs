@@ -8,9 +8,9 @@ use crate::{
     AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
     AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ARAP, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
 };
-use anyhow::{ensure, Result};
-use std::borrow::Cow;
+use anyhow::{Result, ensure};
 use bytes::{BufMut, BytesMut};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 pub struct AuthenStart {
@@ -285,7 +285,10 @@ pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {
         ),
         "invalid authen status"
     );
-    ensure!(flags & !(AUTHEN_FLAG_NOECHO) == 0, "invalid authen reply flags");
+    ensure!(
+        flags & !(AUTHEN_FLAG_NOECHO) == 0,
+        "invalid authen reply flags"
+    );
     let msg_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let data_len = u16::from_be_bytes([body[4], body[5]]) as usize;
     let expected = 6 + msg_len + data_len;

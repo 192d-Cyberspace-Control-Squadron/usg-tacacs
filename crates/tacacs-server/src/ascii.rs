@@ -8,8 +8,8 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::{
-    AuthSessionState, AuthenReply, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETPASS,
-    AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART,
+    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER,
+    AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AuthSessionState, AuthenReply,
 };
 
 const AUTHEN_CONT_ABORT: u8 = 0x01;
@@ -207,9 +207,11 @@ pub async fn handle_ascii_continue(
                 data: pwd_prompt,
             }
         } else {
-            if let Some(delay) =
-                calc_ascii_backoff_capped(config.backoff_ms, state.ascii_attempts, config.backoff_max_ms)
-            {
+            if let Some(delay) = calc_ascii_backoff_capped(
+                config.backoff_ms,
+                state.ascii_attempts,
+                config.backoff_max_ms,
+            ) {
                 sleep(delay).await;
             }
             AuthenReply {
@@ -223,9 +225,11 @@ pub async fn handle_ascii_continue(
     } else if state.ascii_need_pass {
         state.ascii_pass_attempts = state.ascii_pass_attempts.saturating_add(1);
         if cont_data.is_empty() {
-            if let Some(delay) =
-                calc_ascii_backoff_capped(config.backoff_ms, state.ascii_attempts, config.backoff_max_ms)
-            {
+            if let Some(delay) = calc_ascii_backoff_capped(
+                config.backoff_ms,
+                state.ascii_attempts,
+                config.backoff_max_ms,
+            ) {
                 sleep(delay).await;
             }
             AuthenReply {
@@ -244,9 +248,11 @@ pub async fn handle_ascii_continue(
                 verify_pap_bytes(&user, cont_data, credentials)
             };
             if !ok {
-                if let Some(delay) =
-                    calc_ascii_backoff_capped(config.backoff_ms, state.ascii_attempts, config.backoff_max_ms)
-                {
+                if let Some(delay) = calc_ascii_backoff_capped(
+                    config.backoff_ms,
+                    state.ascii_attempts,
+                    config.backoff_max_ms,
+                ) {
                     sleep(delay).await;
                 }
             }

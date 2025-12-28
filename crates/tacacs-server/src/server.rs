@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use crate::ascii::{
-    calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue, username_for_policy,
-    AsciiConfig,
+    AsciiConfig, calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue,
+    username_for_policy,
 };
-use crate::auth::{
-    handle_chap_continue, verify_pap, verify_pap_bytes, verify_pap_bytes_username,
-};
+use crate::auth::{handle_chap_continue, verify_pap, verify_pap_bytes, verify_pap_bytes_username};
 use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
 use crate::tls::build_tls_config;
@@ -24,15 +22,86 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
-    ACCT_STATUS_ERROR, ACCT_STATUS_SUCCESS, AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR,
-    AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW, AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS,
-    AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS, AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII,
-    AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP, AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL,
-    AUTHOR_STATUS_PASS_ADD, ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, AccountingResponse, AccountingRequest, AuthorizationRequest, AuthSessionState, AuthenData, AuthenPacket,
-    AuthenReply, AuthorizationResponse, Packet, read_packet, validate_accounting_response_header,
-    validate_author_response_header, write_accounting_response, write_authen_reply,
-    write_author_response,
+    ACCT_FLAG_START, ACCT_FLAG_STOP, ACCT_FLAG_WATCHDOG, ACCT_STATUS_ERROR, ACCT_STATUS_SUCCESS,
+    AUTHEN_FLAG_NOECHO, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_FOLLOW,
+    AUTHEN_STATUS_GETDATA, AUTHEN_STATUS_GETPASS, AUTHEN_STATUS_GETUSER, AUTHEN_STATUS_PASS,
+    AUTHEN_STATUS_RESTART, AUTHEN_TYPE_ASCII, AUTHEN_TYPE_CHAP, AUTHEN_TYPE_PAP,
+    AUTHOR_STATUS_ERROR, AUTHOR_STATUS_FAIL, AUTHOR_STATUS_PASS_ADD, AccountingRequest,
+    AccountingResponse, AuthSessionState, AuthenData, AuthenPacket, AuthenReply,
+    AuthorizationRequest, AuthorizationResponse, Packet, read_packet,
+    validate_accounting_response_header, validate_author_response_header,
+    write_accounting_response, write_authen_reply, write_author_response,
 };
+
+fn audit_event(
+    event: &str,
+    peer: &str,
+    user: &str,
+    session: u32,
+    status: &str,
+    reason: &str,
+    data: &str,
+) {
+    info!(
+        target: "tacacs_audit",
+        event,
+        peer = %peer,
+        user = %user,
+        session = session,
+        status = %status,
+        reason = %reason,
+        data = %data,
+        "audit event"
+    );
+}
+
+fn authz_reason_response(
+    status: u8,
+    server_msg: impl Into<String>,
+    reason: &'static str,
+    detail: Option<String>,
+) -> AuthorizationResponse {
+    let mut data = format!("reason={reason}");
+    if let Some(extra) = detail {
+        if !extra.is_empty() {
+            data.push(';');
+            data.push_str("detail=");
+            data.push_str(&extra);
+        }
+    }
+    AuthorizationResponse {
+        status,
+        server_msg: server_msg.into(),
+        data,
+        args: Vec::new(),
+    }
+}
+
+fn authz_semantic_detail(msg: &str) -> (&'static str, String) {
+    match msg {
+        "authorization must include exactly one service attribute" => {
+            ("service-missing", msg.to_string())
+        }
+        "authorization service attribute must have a value" => ("service-empty", msg.to_string()),
+        "shell authorization requires protocol attribute" => {
+            ("shell-protocol-missing", msg.to_string())
+        }
+        "shell authorization must not include cmd/cmd-arg attributes" => {
+            ("shell-cmd-invalid", msg.to_string())
+        }
+        "authorization must include at most one protocol attribute" => {
+            ("protocol-count", msg.to_string())
+        }
+        "authorization must include exactly one cmd attribute" => ("cmd-missing", msg.to_string()),
+        "cmd attribute must have a value" => ("cmd-empty", msg.to_string()),
+        "cmd-arg attributes must have values" => ("cmd-arg-empty", msg.to_string()),
+        "service attribute must precede command attributes" => ("service-order", msg.to_string()),
+        "priv-lvl must be numeric" => ("priv-nan", msg.to_string()),
+        "priv-lvl must be 0-15" => ("priv-range", msg.to_string()),
+        "priv-lvl attribute must match header priv_lvl" => ("priv-mismatch", msg.to_string()),
+        _ => ("semantic-invalid", msg.to_string()),
+    }
+}
 
 fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static str> {
     let is_start = req.flags & ACCT_FLAG_START != 0;
@@ -52,15 +121,11 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     if !has_service_or_cmd {
         return Err("accounting requires service or command attributes");
     }
-    let has_task = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("task_id"));
+    let has_task = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("task_id"));
     let has_elapsed = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("elapsed_time"));
-    let has_status = attrs
-        .iter()
-        .any(|a| a.name.eq_ignore_ascii_case("status"));
+    let has_status = attrs.iter().any(|a| a.name.eq_ignore_ascii_case("status"));
     let has_bytes_in = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
@@ -84,7 +149,9 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     let parse_u32 = |key: &str| -> Result<Option<u32>, &'static str> {
         if let Some(attr) = attrs.iter().find(|a| a.name.eq_ignore_ascii_case(key)) {
             let val = attr.value.as_deref().unwrap_or("");
-            let parsed: u32 = val.parse().map_err(|_| "accounting attributes must be numeric where required")?;
+            let parsed: u32 = val
+                .parse()
+                .map_err(|_| "accounting attributes must be numeric where required")?;
             return Ok(Some(parsed));
         }
         Ok(None)
@@ -364,12 +431,21 @@ where
             Ok(Some(Packet::Authorization(request))) => {
                 if let Err(err) = usg_tacacs_proto::validate_author_request(&request) {
                     warn!(peer = %peer, user = %request.user, session = request.header.session_id, error = %err, "authorization request failed RFC validation");
-                    let response = AuthorizationResponse {
-                        status: AUTHOR_STATUS_ERROR,
-                        server_msg: err.to_string(),
-                        data: String::new(),
-                        args: Vec::new(),
-                    };
+                    let response = authz_reason_response(
+                        AUTHOR_STATUS_ERROR,
+                        err.to_string(),
+                        "rfc-validate",
+                        Some(err.to_string()),
+                    );
+                    audit_event(
+                        "authz_rfc_invalid",
+                        &peer,
+                        &request.user,
+                        request.header.session_id,
+                        "error",
+                        "rfc-validate",
+                        &response.data,
+                    );
                     let _ = write_author_response(
                         &mut stream,
                         &request.header,
@@ -384,13 +460,12 @@ where
                 if single_connect.active && !authz_single {
                     warn!(peer = %peer, "single-connect violation: flag missing on authorization");
                     warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on authorization");
-                    let response = AuthorizationResponse {
-                        status: AUTHOR_STATUS_ERROR,
-                        server_msg: "single-connection flag required after authentication"
-                            .to_string(),
-                        data: String::new(),
-                        args: Vec::new(),
-                    };
+                    let response = authz_reason_response(
+                        AUTHOR_STATUS_ERROR,
+                        "single-connection flag required after authentication",
+                        "single-connect",
+                        Some("flag-missing".into()),
+                    );
                     let _ = write_author_response(
                         &mut stream,
                         &request.header,
@@ -410,12 +485,12 @@ where
                     if let Some(ref bound_user) = single_connect.user {
                         if bound_user != &request.user {
                             warn!(peer = %peer, user = %request.user, bound_user = %bound_user, session = request.header.session_id, "single-connect violation: user mismatch on authorization");
-                            let response = AuthorizationResponse {
-                                status: AUTHOR_STATUS_ERROR,
-                                server_msg: "single-connection user mismatch".to_string(),
-                                data: String::new(),
-                                args: Vec::new(),
-                            };
+                            let response = authz_reason_response(
+                                AUTHOR_STATUS_ERROR,
+                                "single-connection user mismatch",
+                                "single-connect",
+                                Some("user-mismatch".into()),
+                            );
                             let _ = write_author_response(
                                 &mut stream,
                                 &request.header,
@@ -427,12 +502,12 @@ where
                         }
                     } else {
                         warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: authorization before authentication");
-                        let response = AuthorizationResponse {
-                            status: AUTHOR_STATUS_ERROR,
-                            server_msg: "single-connection not authenticated".to_string(),
-                            data: String::new(),
-                            args: Vec::new(),
-                        };
+                        let response = authz_reason_response(
+                            AUTHOR_STATUS_ERROR,
+                            "single-connection not authenticated",
+                            "single-connect",
+                            Some("missing-auth".into()),
+                        );
                         let _ = write_author_response(
                             &mut stream,
                             &request.header,
@@ -450,36 +525,66 @@ where
                             let attrs = policy
                                 .shell_attributes_for(&request.user)
                                 .unwrap_or_default();
-                            AuthorizationResponse {
+                            let resp = AuthorizationResponse {
                                 status: AUTHOR_STATUS_PASS_ADD,
                                 server_msg: String::new(),
-                                data: String::new(),
+                                data: "reason=policy-shell".to_string(),
                                 args: attrs,
-                            }
+                            };
+                            audit_event(
+                                "authz_policy_allow",
+                                &peer,
+                                &request.user,
+                                request.header.session_id,
+                                "pass",
+                                "policy-shell",
+                                &resp.data,
+                            );
+                            resp
                         } else if let Some(cmd) = request.command_string() {
                             let decision = policy.authorize(&request.user, &cmd);
                             if decision.allowed {
-                                AuthorizationResponse {
+                                let resp = AuthorizationResponse {
                                     status: AUTHOR_STATUS_PASS_ADD,
                                     server_msg: String::new(),
-                                    data: String::new(),
+                                    data: "reason=policy-allow".to_string(),
                                     args: Vec::new(),
-                                }
+                                };
+                                audit_event(
+                                    "authz_policy_allow",
+                                    &peer,
+                                    &request.user,
+                                    request.header.session_id,
+                                    "pass",
+                                    "policy-allow",
+                                    &resp.data,
+                                );
+                                resp
                             } else {
-                                AuthorizationResponse {
-                                    status: AUTHOR_STATUS_FAIL,
-                                    server_msg: "command denied".to_string(),
-                                    data: String::new(),
-                                    args: Vec::new(),
-                                }
+                                let resp = authz_reason_response(
+                                    AUTHOR_STATUS_FAIL,
+                                    format!("command '{cmd}' denied by policy"),
+                                    "policy-deny",
+                                    Some(cmd),
+                                );
+                                audit_event(
+                                    "authz_policy_deny",
+                                    &peer,
+                                    &request.user,
+                                    request.header.session_id,
+                                    "fail",
+                                    &resp.server_msg,
+                                    &resp.data,
+                                );
+                                resp
                             }
                         } else {
-                            AuthorizationResponse {
-                                status: AUTHOR_STATUS_ERROR,
-                                server_msg: "unsupported request".to_string(),
-                                data: String::new(),
-                                args: Vec::new(),
-                            }
+                            authz_reason_response(
+                                AUTHOR_STATUS_ERROR,
+                                "unsupported request",
+                                "unsupported",
+                                None,
+                            )
                         }
                     }
                     Err(msg) => {
@@ -490,12 +595,23 @@ where
                             reason = %msg,
                             "authorization request rejected by semantic checks"
                         );
-                        AuthorizationResponse {
-                            status: AUTHOR_STATUS_ERROR,
-                            server_msg: msg.to_string(),
-                            data: String::new(),
-                            args: Vec::new(),
-                        }
+                        let (code, detail) = authz_semantic_detail(msg);
+                        let resp = authz_reason_response(
+                            AUTHOR_STATUS_ERROR,
+                            msg.to_string(),
+                            code,
+                            Some(detail.clone()),
+                        );
+                        audit_event(
+                            "authz_semantic_reject",
+                            &peer,
+                            &request.user,
+                            request.header.session_id,
+                            "error",
+                            code,
+                            &resp.data,
+                        );
+                        resp
                     }
                 };
 
@@ -734,10 +850,14 @@ where
                                     state.username.as_deref(),
                                     state.username_raw.as_ref(),
                                 );
-                                let policy_port =
-                                    field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
-                                let policy_rem =
-                                    field_for_policy(state.rem_addr.as_deref(), state.rem_addr_raw.as_ref());
+                                let policy_port = field_for_policy(
+                                    state.port.as_deref(),
+                                    state.port_raw.as_ref(),
+                                );
+                                let policy_rem = field_for_policy(
+                                    state.rem_addr.as_deref(),
+                                    state.rem_addr_raw.as_ref(),
+                                );
                                 (
                                     policy
                                         .prompt_username(
@@ -751,36 +871,38 @@ where
                                         .map(|s| s.as_bytes().to_vec()),
                                 )
                             };
-                            let username_prompt =
-                                |client_msg: Option<&[u8]>, service: Option<u8>| -> Vec<u8> {
-                                    if let Some(msg) = client_msg {
-                                        if !msg.is_empty() {
-                                            return msg.to_vec();
-                                        }
+                            let username_prompt = |client_msg: Option<&[u8]>,
+                                                   service: Option<u8>|
+                             -> Vec<u8> {
+                                if let Some(msg) = client_msg {
+                                    if !msg.is_empty() {
+                                        return msg.to_vec();
                                     }
-                                    if let Some(custom) = policy_user_prompt.as_ref() {
-                                        return custom.clone();
+                                }
+                                if let Some(custom) = policy_user_prompt.as_ref() {
+                                    return custom.clone();
+                                }
+                                match service {
+                                    Some(svc) => format!("Username (service {svc}):").into_bytes(),
+                                    None => b"Username:".to_vec(),
+                                }
+                            };
+                            let password_prompt = |client_msg: Option<&[u8]>,
+                                                   service: Option<u8>|
+                             -> Vec<u8> {
+                                if let Some(msg) = client_msg {
+                                    if !msg.is_empty() {
+                                        return msg.to_vec();
                                     }
-                                    match service {
-                                        Some(svc) => format!("Username (service {svc}):").into_bytes(),
-                                        None => b"Username:".to_vec(),
-                                    }
-                                };
-                            let password_prompt =
-                                |client_msg: Option<&[u8]>, service: Option<u8>| -> Vec<u8> {
-                                    if let Some(msg) = client_msg {
-                                        if !msg.is_empty() {
-                                            return msg.to_vec();
-                                        }
-                                    }
-                                    if let Some(custom) = policy_pass_prompt.as_ref() {
-                                        return custom.clone();
-                                    }
-                                    match service {
-                                        Some(svc) => format!("Password (service {svc}):").into_bytes(),
-                                        None => b"Password:".to_vec(),
-                                    }
-                                };
+                                }
+                                if let Some(custom) = policy_pass_prompt.as_ref() {
+                                    return custom.clone();
+                                }
+                                match service {
+                                    Some(svc) => format!("Password (service {svc}):").into_bytes(),
+                                    None => b"Password:".to_vec(),
+                                }
+                            };
                             state.ascii_need_user = state.username.is_none();
                             if state.ascii_need_user {
                                 AuthenReply {
@@ -801,13 +923,11 @@ where
                                     )
                                 };
                                 if !ok {
-                                    if let Some(delay) =
-                                        calc_ascii_backoff_capped(
-                                            ascii_backoff_ms,
-                                            state.ascii_attempts,
-                                            ascii_backoff_max_ms,
-                                        )
-                                    {
+                                    if let Some(delay) = calc_ascii_backoff_capped(
+                                        ascii_backoff_ms,
+                                        state.ascii_attempts,
+                                        ascii_backoff_max_ms,
+                                    ) {
                                         sleep(delay).await;
                                     }
                                 }
@@ -832,7 +952,9 @@ where
                                             .message_success()
                                             .map(|m| m.to_string())
                                             .unwrap_or_else(|| {
-                                                format!("authentication succeeded{svc_str}{act_str}")
+                                                format!(
+                                                    "authentication succeeded{svc_str}{act_str}"
+                                                )
                                             })
                                     } else {
                                         policy
@@ -867,9 +989,7 @@ where
                             };
                             let ok = verify_pap(&start.user, &password, &credentials);
                             let policy = policy.read().await;
-                            let svc_str = start
-                                .service
-                                .to_string();
+                            let svc_str = start.service.to_string();
                             let act_str = start.action.to_string();
                             AuthenReply {
                                 status: if ok {
@@ -906,7 +1026,9 @@ where
                             let mut chal = [0u8; 16];
                             let mut chap_id_bytes = [0u8; 1];
                             chap_id_bytes.copy_from_slice(chap_id);
-                            if rand_bytes(&mut chal).is_err() || rand_bytes(&mut chap_id_bytes).is_err() {
+                            if rand_bytes(&mut chal).is_err()
+                                || rand_bytes(&mut chap_id_bytes).is_err()
+                            {
                                 AuthenReply {
                                     status: AUTHEN_STATUS_ERROR,
                                     flags: 0,
@@ -963,9 +1085,12 @@ where
                         _ if state.challenge.is_some() => {
                             let user = state.username.clone().unwrap_or_default();
                             match state.authen_type {
-                                Some(AUTHEN_TYPE_CHAP) => {
-                                    handle_chap_continue(&user, cont.data.as_slice(), state, &credentials)
-                                }
+                                Some(AUTHEN_TYPE_CHAP) => handle_chap_continue(
+                                    &user,
+                                    cont.data.as_slice(),
+                                    state,
+                                    &credentials,
+                                ),
                                 _ => AuthenReply {
                                     status: AUTHEN_STATUS_FAIL,
                                     flags: 0,
@@ -1001,6 +1126,28 @@ where
                         | AUTHEN_STATUS_RESTART
                 );
                 let single_user = state.username.clone();
+                if terminal {
+                    let status_label = match reply.status {
+                        AUTHEN_STATUS_PASS => "pass",
+                        AUTHEN_STATUS_FAIL => "fail",
+                        AUTHEN_STATUS_ERROR => "error",
+                        AUTHEN_STATUS_FOLLOW => "follow",
+                        AUTHEN_STATUS_RESTART => "restart",
+                        _ => "other",
+                    };
+                    let user_for_log = state.username.as_deref().unwrap_or_else(|| {
+                        state.username_raw.as_ref().map(|_| "<raw>").unwrap_or("")
+                    });
+                    audit_event(
+                        "authn_terminal",
+                        &peer,
+                        user_for_log,
+                        session_id,
+                        status_label,
+                        "terminal",
+                        "",
+                    );
+                }
 
                 write_authen_reply(
                     &mut stream,
@@ -1042,6 +1189,15 @@ where
                         data: String::new(),
                         args: Vec::new(),
                     };
+                    audit_event(
+                        "acct_rfc_invalid",
+                        &peer,
+                        &request.user,
+                        request.header.session_id,
+                        "error",
+                        "rfc-validate",
+                        &response.data,
+                    );
                     let _ = write_accounting_response(
                         &mut stream,
                         &request.header,
@@ -1131,14 +1287,50 @@ where
                             reason = %msg,
                             "accounting request rejected by semantic checks"
                         );
-                        AccountingResponse {
-                        status: ACCT_STATUS_ERROR,
-                        server_msg: msg.to_string(),
-                        data: String::new(),
-                        args: Vec::new(),
-                        }
+                        let resp = AccountingResponse {
+                            status: ACCT_STATUS_ERROR,
+                            server_msg: msg.to_string(),
+                            data: String::new(),
+                            args: Vec::new(),
+                        };
+                        audit_event(
+                            "acct_semantic_reject",
+                            &peer,
+                            &request.user,
+                            request.header.session_id,
+                            "error",
+                            msg,
+                            &resp.data,
+                        );
+                        resp
                     }
                 };
+                if response.status == ACCT_STATUS_SUCCESS {
+                    let acct_type = if request.flags & ACCT_FLAG_START != 0 {
+                        "start"
+                    } else if request.flags & ACCT_FLAG_STOP != 0 {
+                        "stop"
+                    } else if request.flags & ACCT_FLAG_WATCHDOG != 0 {
+                        "watchdog"
+                    } else {
+                        "unknown"
+                    };
+                    let data = format!(
+                        "type={};flags=0x{:02x};attrs={}",
+                        acct_type,
+                        request.flags,
+                        request.args.len()
+                    );
+                    audit_event(
+                        "acct_accept",
+                        &peer,
+                        &request.user,
+                        request.header.session_id,
+                        "success",
+                        "semantic-ok",
+                        &data,
+                    );
+                }
                 write_accounting_response(
                     &mut stream,
                     &request.header,

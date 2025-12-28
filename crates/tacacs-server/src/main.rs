@@ -1,6 +1,6 @@
 use crate::config::{Args, credentials_map};
 use crate::server::{serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,7 +107,10 @@ async fn main() -> Result<()> {
 
     if let Some(addr) = args.listen_legacy {
         if shared_secret.as_deref().map(|s| s.len()).unwrap_or(0) < MIN_SECRET_LEN {
-            bail!("legacy TACACS+ requires a shared secret of at least {} bytes", MIN_SECRET_LEN);
+            bail!(
+                "legacy TACACS+ requires a shared secret of at least {} bytes",
+                MIN_SECRET_LEN
+            );
         }
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
@@ -160,8 +163,8 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-mod auth;
 mod ascii;
+mod auth;
 mod config;
 mod policy;
 mod server;

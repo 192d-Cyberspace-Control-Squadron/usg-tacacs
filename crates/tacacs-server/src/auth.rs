@@ -2,7 +2,7 @@
 use openssl::hash::{MessageDigest, hash};
 use std::collections::HashMap;
 use usg_tacacs_proto::{
-    AuthSessionState, AuthenReply, AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS,
+    AUTHEN_STATUS_ERROR, AUTHEN_STATUS_FAIL, AUTHEN_STATUS_PASS, AuthSessionState, AuthenReply,
 };
 
 pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -> bool {
