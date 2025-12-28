@@ -220,6 +220,7 @@ where
                     request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
                 if single_connect_active && !authz_single {
                     warn!(peer = %peer, "single-connect violation: flag missing on authorization");
+                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on authorization");
                     let response = AuthorizationResponse {
                         status: AUTHOR_STATUS_ERROR,
                         server_msg: "single-connection flag required after authentication"
@@ -239,12 +240,13 @@ where
                 if authz_single {
                     if let Some(bound) = single_connect_session {
                         if bound != request.header.session_id {
-                            warn!(peer = %peer, "single-connect violation: session-id mismatch on authorization");
+                            warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on authorization");
                             break;
                         }
                     }
                     if let Some(ref bound_user) = single_connect_user {
                         if bound_user != &request.user {
+                            warn!(peer = %peer, user = %request.user, bound_user = %bound_user, session = request.header.session_id, "single-connect violation: user mismatch on authorization");
                             let response = AuthorizationResponse {
                                 status: AUTHOR_STATUS_ERROR,
                                 server_msg: "single-connection user mismatch".to_string(),
@@ -261,7 +263,7 @@ where
                             break;
                         }
                     } else {
-                        warn!(peer = %peer, "single-connect violation: authorization before authentication");
+                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: authorization before authentication");
                         let response = AuthorizationResponse {
                             status: AUTHOR_STATUS_ERROR,
                             server_msg: "single-connection not authenticated".to_string(),
@@ -354,7 +356,7 @@ where
                         AuthenPacket::Start(start) => &start.header,
                         AuthenPacket::Continue(cont) => &cont.header,
                     };
-                    warn!(peer = %peer, "single-connect violation: flag missing on authentication");
+                    warn!(peer = %peer, session = session_id, "single-connect violation: flag missing on authentication");
                     let reply = AuthenReply {
                         status: AUTHEN_STATUS_ERROR,
                         flags: 0,
@@ -374,7 +376,7 @@ where
                     if single_connect_active {
                         if let Some(ref bound_user) = single_connect_user {
                             if bound_user != &start.user {
-                                warn!(peer = %peer, "single-connect violation: user mismatch on authentication");
+                                warn!(peer = %peer, user = %start.user, bound_user = %bound_user, session = session_id, "single-connect violation: user mismatch on authentication");
                                 let reply = AuthenReply {
                                     status: AUTHEN_STATUS_ERROR,
                                     flags: 0,
@@ -391,7 +393,7 @@ where
                                 break;
                             }
                         } else {
-                            warn!(peer = %peer, "single-connect violation: authentication with missing bound user");
+                            warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: authentication with missing bound user");
                             let reply = AuthenReply {
                                 status: AUTHEN_STATUS_ERROR,
                                 flags: 0,
@@ -408,7 +410,7 @@ where
                             break;
                         }
                         if single_connect_locked {
-                            warn!(peer = %peer, "single-connect violation: repeated authentication after lock");
+                            warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: repeated authentication after lock");
                             let reply = AuthenReply {
                                 status: AUTHEN_STATUS_ERROR,
                                 flags: 0,
@@ -426,7 +428,7 @@ where
                         }
                         if let Some(bound) = single_connect_session {
                             if bound != start.header.session_id {
-                                warn!(peer = %peer, "single-connect violation: session-id mismatch on authentication");
+                                warn!(peer = %peer, user = %start.user, session = session_id, bound_session = bound, "single-connect violation: session-id mismatch on authentication");
                                 break;
                             }
                         }
@@ -734,17 +736,18 @@ where
                 }
                 if matches!(reply.status, AUTHEN_STATUS_PASS) && single_connect {
                     if let Some(user) = single_user {
-                        single_connect_user = Some(user);
+                        single_connect_user = Some(user.clone());
                         single_connect_active = true;
                         single_connect_locked = true;
                         single_connect_session = Some(session_id);
+                        info!(peer = %peer, user = %user, session = session_id, "single-connect established");
                     }
                 }
             }
             Ok(Some(Packet::Accounting(request))) => {
                 let acct_single = request.header.flags & usg_tacacs_proto::FLAG_SINGLE_CONNECT != 0;
                 if single_connect_active && !acct_single {
-                    warn!(peer = %peer, "single-connect violation: flag missing on accounting");
+                    warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: flag missing on accounting");
                     let response = AccountingResponse {
                         status: ACCT_STATUS_ERROR,
                         server_msg: "single-connection flag required after authentication"
@@ -764,12 +767,13 @@ where
                 if acct_single {
                     if let Some(bound) = single_connect_session {
                         if bound != request.header.session_id {
-                            warn!(peer = %peer, "single-connect violation: session-id mismatch on accounting");
+                            warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on accounting");
                             break;
                         }
                     }
                     if let Some(ref bound_user) = single_connect_user {
                         if bound_user != &request.user {
+                            warn!(peer = %peer, user = %request.user, bound_user = %bound_user, session = request.header.session_id, "single-connect violation: user mismatch on accounting");
                             let response = AccountingResponse {
                                 status: ACCT_STATUS_ERROR,
                                 server_msg: "single-connection user mismatch".to_string(),
@@ -786,7 +790,7 @@ where
                             break;
                         }
                     } else {
-                        warn!(peer = %peer, "single-connect violation: accounting before authentication");
+                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, "single-connect violation: accounting before authentication");
                         let response = AccountingResponse {
                             status: ACCT_STATUS_ERROR,
                             server_msg: "single-connection not authenticated".to_string(),
