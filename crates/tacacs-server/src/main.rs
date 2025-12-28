@@ -312,7 +312,7 @@ where
                                     data: String::new(),
                                 }
                             }
-                            AUTHEN_TYPE_CHAP | AUTHEN_TYPE_ARAP => {
+                            AUTHEN_TYPE_CHAP => {
                                 let chal_len = if start.authen_type == AUTHEN_TYPE_CHAP {
                                     16
                                 } else {
@@ -336,6 +336,12 @@ where
                                     }
                                 }
                             }
+                            AUTHEN_TYPE_ARAP => AuthenReply {
+                                status: AUTHEN_STATUS_FAIL,
+                                flags: 0,
+                                server_msg: "ARAP authentication not supported".into(),
+                                data: String::new(),
+                            },
                             _ => AuthenReply {
                                 status: AUTHEN_STATUS_FOLLOW,
                                 flags: 0,
@@ -380,20 +386,12 @@ where
                                 }
                             }
                         }
-                        Some(AUTHEN_TYPE_ARAP) => {
-                            let ok = verify_arap(cont.data.as_slice(), state.challenge.as_ref().unwrap());
-                            state.challenge = None;
-                            AuthenReply {
-                                status: if ok { AUTHEN_STATUS_PASS } else { AUTHEN_STATUS_FAIL },
-                                flags: 0,
-                                server_msg: if ok {
-                                    String::new()
-                                } else {
-                                    "invalid ARAP response".into()
-                                },
-                                data: String::new(),
-                            }
-                        }
+                        Some(AUTHEN_TYPE_ARAP) => AuthenReply {
+                            status: AUTHEN_STATUS_FAIL,
+                            flags: 0,
+                            server_msg: "ARAP authentication not supported".into(),
+                            data: String::new(),
+                        },
                         _ => AuthenReply {
                             status: AUTHEN_STATUS_FAIL,
                             flags: 0,
