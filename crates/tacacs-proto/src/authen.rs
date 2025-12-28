@@ -62,6 +62,109 @@ pub enum AuthenPacket {
     Continue(AuthenContinue),
 }
 
+impl AuthenStart {
+    pub fn builder(
+        session_id: u32,
+        action: u8,
+        priv_lvl: u8,
+        authen_type: u8,
+        service: u8,
+    ) -> AuthenStart {
+        AuthenStart {
+            header: Header {
+                version: crate::VERSION,
+                seq_no: 1,
+                session_id,
+                length: 0,
+                packet_type: crate::TYPE_AUTHEN,
+                flags: 0,
+            },
+            action,
+            priv_lvl,
+            authen_type,
+            service,
+            user_raw: Vec::new(),
+            user: String::new(),
+            port_raw: Vec::new(),
+            port: String::new(),
+            rem_addr_raw: Vec::new(),
+            rem_addr: String::new(),
+            data: Vec::new(),
+        }
+    }
+
+    pub fn with_user(mut self, user_raw: Vec<u8>, user: String) -> Self {
+        self.user_raw = user_raw;
+        self.user = user;
+        self
+    }
+
+    pub fn with_port(mut self, port_raw: Vec<u8>, port: String) -> Self {
+        self.port_raw = port_raw;
+        self.port = port;
+        self
+    }
+
+    pub fn with_rem_addr(mut self, rem_addr_raw: Vec<u8>, rem_addr: String) -> Self {
+        self.rem_addr_raw = rem_addr_raw;
+        self.rem_addr = rem_addr;
+        self
+    }
+
+    pub fn with_data(mut self, data: Vec<u8>) -> Self {
+        self.data = data;
+        self
+    }
+
+    pub fn validate(self) -> anyhow::Result<Self> {
+        crate::validate_authen_start(&self)?;
+        Ok(self)
+    }
+}
+
+impl AuthenContinue {
+    pub fn builder(session_id: u32) -> AuthenContinue {
+        AuthenContinue {
+            header: Header {
+                version: crate::VERSION,
+                seq_no: 2,
+                session_id,
+                length: 0,
+                packet_type: crate::TYPE_AUTHEN,
+                flags: 0,
+            },
+            user_msg: Vec::new(),
+            data: Vec::new(),
+            flags: 0,
+        }
+    }
+
+    pub fn with_seq(mut self, seq_no: u8) -> Self {
+        self.header.seq_no = seq_no;
+        self
+    }
+
+    pub fn with_user_msg(mut self, msg: Vec<u8>) -> Self {
+        self.user_msg = msg;
+        self
+    }
+
+    pub fn with_data(mut self, data: Vec<u8>) -> Self {
+        self.data = data;
+        self
+    }
+
+    pub fn with_flags(mut self, flags: u8) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    pub fn validate(self) -> anyhow::Result<Self> {
+        crate::validate_authen_continue(&self)?;
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AuthenData {
     Pap { password: String },

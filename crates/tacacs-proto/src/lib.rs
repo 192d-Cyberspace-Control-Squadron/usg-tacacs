@@ -16,7 +16,9 @@ pub mod header;
 mod util;
 
 pub use accounting::{AccountingRequest, AccountingResponse};
-pub use authen::{AuthSessionState, AuthenData, AuthenPacket, AuthenReply};
+pub use authen::{
+    AuthSessionState, AuthenContinue, AuthenData, AuthenPacket, AuthenReply, AuthenStart,
+};
 pub use author::{AuthorizationRequest, AuthorizationResponse};
 pub use header::Header;
 
@@ -294,6 +296,13 @@ where
 
     ensure!(body.len() >= 5, "authorization response too short");
     let status = body[0];
+    ensure!(
+        status == AUTHOR_STATUS_PASS_REPL
+            || status == AUTHOR_STATUS_PASS_ADD
+            || status == AUTHOR_STATUS_FAIL
+            || status == AUTHOR_STATUS_ERROR,
+        "authorization response status invalid"
+    );
     let arg_cnt = body[1] as usize;
     let server_msg_len = u16::from_be_bytes([body[2], body[3]]) as usize;
     let data_len = u16::from_be_bytes([body[4], body[5]]) as usize;

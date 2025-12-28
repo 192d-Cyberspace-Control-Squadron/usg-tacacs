@@ -32,6 +32,102 @@ pub struct AuthorizationResponse {
 }
 
 impl AuthorizationRequest {
+    /// Set or replace the service attribute (enforced to appear first).
+    pub fn with_service(mut self, service: impl AsRef<str>) -> Self {
+        self.args
+            .retain(|a| !a.to_lowercase().starts_with("service="));
+        self.args.insert(0, format!("service={}", service.as_ref()));
+        self
+    }
+
+    /// Set or replace the protocol attribute (kept after service when present).
+    pub fn with_protocol(mut self, protocol: impl AsRef<str>) -> Self {
+        self.args
+            .retain(|a| !a.to_lowercase().starts_with("protocol="));
+        let service_pos = self
+            .args
+            .iter()
+            .position(|a| a.to_lowercase().starts_with("service="));
+        let insert_pos = service_pos.map(|p| p + 1).unwrap_or(self.args.len());
+        self.args
+            .insert(insert_pos, format!("protocol={}", protocol.as_ref()));
+        self
+    }
+
+    /// Set or replace the cmd attribute.
+    pub fn with_cmd(mut self, cmd: impl AsRef<str>) -> Self {
+        self.args.retain(|a| !a.to_lowercase().starts_with("cmd="));
+        self.args.push(format!("cmd={}", cmd.as_ref()));
+        self
+    }
+
+    /// Add a cmd-arg attribute (multiple allowed).
+    pub fn add_cmd_arg(mut self, arg: impl AsRef<str>) -> Self {
+        self.args.push(format!("cmd-arg={}", arg.as_ref()));
+        self
+    }
+
+    /// Convenience for shell start requests: sets service and protocol.
+    pub fn as_shell(mut self, protocol: impl AsRef<str>) -> Self {
+        self = self.with_service("shell");
+        self = self.with_protocol(protocol);
+        self
+    }
+
+    pub fn builder(session_id: u32) -> AuthorizationRequest {
+        AuthorizationRequest {
+            header: Header {
+                version: crate::VERSION,
+                seq_no: 1,
+                session_id,
+                length: 0,
+                packet_type: crate::TYPE_AUTHOR,
+                flags: 0,
+            },
+            authen_method: 1,
+            priv_lvl: 1,
+            authen_type: 1,
+            authen_service: 1,
+            user: String::new(),
+            port: String::new(),
+            rem_addr: String::new(),
+            args: Vec::new(),
+        }
+    }
+
+    pub fn with_authen(mut self, method: u8, authen_type: u8, service: u8, priv_lvl: u8) -> Self {
+        self.authen_method = method;
+        self.authen_type = authen_type;
+        self.authen_service = service;
+        self.priv_lvl = priv_lvl;
+        self
+    }
+
+    pub fn with_user(mut self, user: String) -> Self {
+        self.user = user;
+        self
+    }
+
+    pub fn with_port(mut self, port: String) -> Self {
+        self.port = port;
+        self
+    }
+
+    pub fn with_rem_addr(mut self, rem_addr: String) -> Self {
+        self.rem_addr = rem_addr;
+        self
+    }
+
+    pub fn add_arg(mut self, arg: String) -> Self {
+        self.args.push(arg);
+        self
+    }
+
+    pub fn validate(self) -> anyhow::Result<Self> {
+        crate::validate_author_request(&self)?;
+        Ok(self)
+    }
+
     pub fn command_string(&self) -> Option<String> {
         let mut base = None;
         let mut arguments = Vec::new();

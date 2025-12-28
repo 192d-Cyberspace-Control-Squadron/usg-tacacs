@@ -746,6 +746,15 @@ where
                             code,
                             &meta,
                         );
+                        audit_event(
+                            "authz_error",
+                            &peer,
+                            &request.user,
+                            request.header.session_id,
+                            "error",
+                            "authz-error",
+                            &resp.data,
+                        );
                         resp
                     }
                 };
@@ -1601,6 +1610,16 @@ where
                         "success",
                         "semantic-ok",
                         &data,
+                    );
+                } else if response.status == ACCT_STATUS_ERROR {
+                    audit_event(
+                        "acct_error",
+                        &peer,
+                        &request.user,
+                        request.header.session_id,
+                        "error",
+                        "acct-error",
+                        &response.data,
                     );
                 }
                 write_accounting_response(
