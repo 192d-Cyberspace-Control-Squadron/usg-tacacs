@@ -82,6 +82,10 @@ pub struct Args {
     /// Idle timeout (seconds) for single-connection sessions before closing (0 = disabled).
     #[arg(long, default_value_t = 300)]
     pub single_connect_idle_secs: u64,
+
+    /// Expected keepalive activity interval (seconds) for single-connection sessions; 0 disables the timeout.
+    #[arg(long, default_value_t = 120)]
+    pub single_connect_keepalive_secs: u64,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {

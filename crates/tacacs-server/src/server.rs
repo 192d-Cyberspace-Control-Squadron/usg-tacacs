@@ -61,11 +61,20 @@ fn validate_accounting_semantics(req: &AccountingRequest) -> Result<(), &'static
     let has_status = attrs
         .iter()
         .any(|a| a.name.eq_ignore_ascii_case("status"));
+    let has_bytes_in = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("bytes_in"));
+    let has_bytes_out = attrs
+        .iter()
+        .any(|a| a.name.eq_ignore_ascii_case("bytes_out"));
     if is_start && !has_task {
         return Err("start accounting requires task_id attribute");
     }
     if is_stop && (!has_task || !has_elapsed || !has_status) {
         return Err("stop accounting requires task_id, elapsed_time, and status attributes");
+    }
+    if is_stop && (!has_bytes_in || !has_bytes_out) {
+        return Err("stop accounting requires bytes_in and bytes_out attributes");
     }
     if is_watchdog && !has_task {
         return Err("watchdog accounting requires task_id attribute");
@@ -206,6 +215,7 @@ pub async fn serve_tls(
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
+    single_connect_keepalive_secs: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -222,6 +232,7 @@ pub async fn serve_tls(
         let ascii_backoff_ms = ascii_backoff_ms;
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
+        let single_connect_keepalive_secs = single_connect_keepalive_secs;
         tokio::spawn(async move {
             match acceptor.accept(socket).await {
                 Ok(stream) => {
@@ -238,6 +249,7 @@ pub async fn serve_tls(
                         ascii_backoff_max_ms,
                         ascii_lockout_limit,
                         single_connect_idle_secs,
+                        single_connect_keepalive_secs,
                     )
                     .await
                     {
@@ -262,6 +274,7 @@ pub async fn serve_legacy(
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
+    single_connect_keepalive_secs: u64,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -292,6 +305,7 @@ pub async fn serve_legacy(
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
                 single_connect_idle_secs,
+                single_connect_keepalive_secs,
             )
             .await
             {
@@ -314,6 +328,7 @@ async fn handle_connection<S>(
     ascii_backoff_max_ms: u64,
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
+    single_connect_keepalive_secs: u64,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -323,11 +338,20 @@ where
     let mut single_connect = SingleConnectState::default();
     loop {
         let read_future = read_packet(&mut stream, secret.as_deref().map(|s| s.as_slice()));
-        let packet_result = if single_connect.active && single_connect_idle_secs > 0 {
-            match timeout(Duration::from_secs(single_connect_idle_secs), read_future).await {
+        let keepalive_deadline = if single_connect_keepalive_secs > 0 {
+            single_connect_keepalive_secs
+        } else {
+            single_connect_idle_secs
+        };
+        let packet_result = if single_connect.active && keepalive_deadline > 0 {
+            match timeout(Duration::from_secs(keepalive_deadline), read_future).await {
                 Ok(res) => res,
                 Err(_) => {
-                    warn!(peer = %peer, "single-connect idle timeout reached; closing");
+                    warn!(
+                        peer = %peer,
+                        idle_secs = keepalive_deadline,
+                        "single-connect keepalive/idle timeout reached; closing"
+                    );
                     break;
                 }
             }

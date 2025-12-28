@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
     let ascii_backoff_max_ms = args.ascii_backoff_max_ms;
     let ascii_lockout_limit = args.ascii_lockout_limit;
     let single_connect_idle_secs = args.single_connect_idle_secs;
+    let single_connect_keepalive_secs = args.single_connect_keepalive_secs;
 
     let mut handles = Vec::new();
 
@@ -80,6 +81,7 @@ async fn main() -> Result<()> {
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_idle_secs = single_connect_idle_secs;
+        let single_connect_keepalive_secs = single_connect_keepalive_secs;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -94,6 +96,7 @@ async fn main() -> Result<()> {
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
                 single_connect_idle_secs,
+                single_connect_keepalive_secs,
             )
             .await
             {
@@ -116,6 +119,7 @@ async fn main() -> Result<()> {
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_idle_secs = single_connect_idle_secs;
+        let single_connect_keepalive_secs = single_connect_keepalive_secs;
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_legacy(
                 addr,
@@ -129,6 +133,7 @@ async fn main() -> Result<()> {
                 ascii_backoff_max_ms,
                 ascii_lockout_limit,
                 single_connect_idle_secs,
+                single_connect_keepalive_secs,
             )
             .await
             {
