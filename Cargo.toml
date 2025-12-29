@@ -4,4 +4,5 @@ members = [
   "crates/tacacs-proto",
   "crates/tacacs-policy",
   "crates/tacacs-server",
+  "crates/tacacs-policy-ingest",
 ]

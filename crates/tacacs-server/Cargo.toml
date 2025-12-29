@@ -1,6 +1,6 @@
 [package]
 name = "usg-tacacs-server"
-version = "0.1.0"
+version = "0.76.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 license-file = "LICENSE"
@@ -18,4 +18,7 @@ usg-tacacs-policy = { path = "../tacacs-policy" }
 usg-tacacs-proto = { path = "../tacacs-proto" }
 openssl = "0.10"
 hex = "0.4"
-ldap3 = { version = "0.11", default-features = false, features = ["tls-native", "sync"] }
+ldap3 = { version = "0.11", default-features = false, features = [
+    "tls-native",
+    "sync",
+] }
