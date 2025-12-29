@@ -60,3 +60,9 @@ Schemas live in `crates/tacacs-policy-ingest/schemas/`.
 
 - Client auth is enforced via mTLS; add CN/SAN allowlists for tighter control.
 - Uses tracing with env filter; set `RUST_LOG=info` (or similar) for logs.
+
+## Database tables (`crates/tacacs-policy-ingest/sql/schema.sql`)
+- `ingest_runs`: records each ingest attempt (id, repo_id, commit_sha, ref, received_at).
+- `policy_versions`: versioned policy JSON per repo + commit + location_code (unique on that tuple).
+- `config_versions`: versioned config JSON per repo + commit + location_code (unique on that tuple).
+- `active_set`: current active commit per repo/location_code, with activation metadata (activated_by, activated_at).
