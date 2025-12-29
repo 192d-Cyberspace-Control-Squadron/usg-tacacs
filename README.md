@@ -11,6 +11,35 @@ Rust TACACS+ server with:
 - Command normalization + regex auto-anchoring
 - Capability/keepalive packet support (vendor-specific, single-connect/keepalive bits, request/ack)
 - Hardened RFC 8907 semantics: authz protocol/service checks, explicit FOLLOW rejection, richer audit telemetry
+- Process hardening guidance: run as non-root, optionally chroot/jail, set RLIMITs, and drop ambient caps (see below)
+
+## Process hardening (recommended)
+
+Run the daemon under a dedicated non-root user, with strict sandboxing/limits. Example systemd unit excerpt:
+
+```
+[Service]
+User=tacacs
+Group=tacacs
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+LimitNOFILE=4096
+LimitNPROC=256
+MemoryAccounting=yes
+TasksAccounting=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+LockPersonality=yes
+```
+
+If you require chroot/jail, place certs/policy inside the jail and adjust paths accordingly.
 
 ## Validate policy
 
