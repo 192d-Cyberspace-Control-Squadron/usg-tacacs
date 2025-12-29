@@ -4,8 +4,8 @@ use crate::ascii::{
     username_for_policy,
 };
 use crate::auth::{
-    handle_chap_continue, verify_pap, verify_pap_bytes, verify_pap_bytes_username,
-    verify_password_sources, LdapConfig,
+    handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
+    verify_pap_bytes_username, verify_password_sources, LdapConfig,
 };
 use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
@@ -913,6 +913,11 @@ where
                     Ok(()) => {
                         let policy = policy.read().await;
                         let ctx = authz_context(&request);
+                        let ldap_groups = if let Some(ldap_cfg) = ldap.as_ref() {
+                            ldap_fetch_groups(ldap_cfg, &request.user).await
+                        } else {
+                            Vec::new()
+                        };
                         if request.is_shell_start() {
                             let attrs =
                                 policy
@@ -941,7 +946,8 @@ where
                             );
                             resp
                         } else if let Some(cmd) = request.command_string() {
-                            let decision = policy.authorize(&request.user, &cmd);
+                            let decision =
+                                policy.authorize_with_groups(&request.user, &ldap_groups, &cmd);
                             if decision.allowed {
                                 let mut data = String::from("reason=policy-allow");
                                 if let Some(rule) = decision.matched_rule.clone() {
@@ -950,10 +956,15 @@ where
                                 }
                                 data.push_str(";ctx=");
                                 data.push_str(&ctx);
+                                let ldap_data = if !ldap_groups.is_empty() {
+                                    format!(";groups={}", ldap_groups.join(","))
+                                } else {
+                                    String::new()
+                                };
                                 let resp = AuthorizationResponse {
                                     status: AUTHOR_STATUS_PASS_REPL,
                                     server_msg: String::new(),
-                                    data: data.clone(),
+                                    data: format!("{data}{ldap_data}"),
                                     args: authz_allow_attrs(&request),
                                 };
                                 audit_event(
@@ -963,7 +974,7 @@ where
                                     request.header.session_id,
                                     "pass",
                                     "policy-allow",
-                                    &data,
+                                    &resp.data,
                                 );
                                 resp
                             } else {

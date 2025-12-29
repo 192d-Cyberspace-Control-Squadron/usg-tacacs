@@ -74,6 +74,8 @@ async fn main() -> Result<()> {
             username_attr: args.ldap_username_attr.clone(),
             timeout: Duration::from_millis(args.ldap_timeout_ms),
             ca_file: args.ldap_ca_file.clone(),
+            required_group: args.ldap_required_group.clone(),
+            group_attr: args.ldap_group_attr.clone(),
         }))
     } else {
         None

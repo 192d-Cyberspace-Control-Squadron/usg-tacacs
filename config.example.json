@@ -27,6 +27,8 @@
   "ldap_username_attr": "uid",
   "ldap_timeout_ms": 5000,
   "ldap_ca_file": null,
+  "ldap_required_group": [],
+  "ldap_group_attr": "memberOf",
   "policy": "policy/policy.example.json",
   "schema": "policy/policy.schema.json",
   "check_policy": null

@@ -19,6 +19,8 @@ pub struct LdapConfig {
     pub username_attr: String,
     pub timeout: Duration,
     pub ca_file: Option<PathBuf>,
+    pub required_group: Vec<String>,
+    pub group_attr: String,
 }
 
 impl LdapConfig {
@@ -51,7 +53,12 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
         return false;
     }
     let filter = format!("({}={})", cfg.username_attr, username);
-    let search = ldap.search(&cfg.search_base, Scope::Subtree, &filter, vec!["dn"]);
+    let search = ldap.search(
+        &cfg.search_base,
+        Scope::Subtree,
+        &filter,
+        vec!["dn", &cfg.group_attr],
+    );
     let Ok((results, _res)) = search.and_then(|r| r.success()) else {
         return false;
     };
@@ -59,9 +66,65 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
         return false;
     };
     let user_dn = SearchEntry::construct(entry).dn;
+    if !cfg.required_group.is_empty() {
+        let search = ldap
+            .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+            .and_then(|r| r.success());
+        if let Ok((entries, _)) = search {
+            if let Some(entry) = entries.into_iter().next() {
+                let se = SearchEntry::construct(entry);
+                let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
+                if !groups.iter().any(|g| {
+                    cfg.required_group
+                        .iter()
+                        .any(|req| g.eq_ignore_ascii_case(req))
+                }) {
+                    return false;
+                }
+            }
+        }
+    }
     ldap.simple_bind(&user_dn, password)
         .and_then(|r| r.success())
         .is_ok()
+}
+
+pub async fn ldap_fetch_groups(cfg: &Arc<LdapConfig>, username: &str) -> Vec<String> {
+    let cfg = cfg.clone();
+    let user = username.to_string();
+    task::spawn_blocking(move || ldap_fetch_groups_blocking(cfg, &user))
+        .await
+        .unwrap_or_default()
+}
+
+fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<String> {
+    if !cfg.url.to_lowercase().starts_with("ldaps://") {
+        return Vec::new();
+    }
+    let settings = LdapConnSettings::new().set_conn_timeout(cfg.timeout);
+    let Ok(mut ldap) = LdapConn::with_settings(settings, &cfg.url) else {
+        return Vec::new();
+    };
+    if ldap.simple_bind(&cfg.bind_dn, &cfg.bind_password).and_then(|r| r.success()).is_err() {
+        return Vec::new();
+    }
+    let filter = format!("({}={})", cfg.username_attr, username);
+    let search = ldap
+        .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+        .and_then(|r| r.success());
+    let Ok((entries, _)) = search else {
+        return Vec::new();
+    };
+    if let Some(entry) = entries.into_iter().next() {
+        let se = SearchEntry::construct(entry);
+        let groups = se
+            .attrs
+            .get(&cfg.group_attr)
+            .cloned()
+            .unwrap_or_default();
+        return groups.into_iter().map(|g| g.to_lowercase()).collect();
+    }
+    Vec::new()
 }
 
 pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -> bool {

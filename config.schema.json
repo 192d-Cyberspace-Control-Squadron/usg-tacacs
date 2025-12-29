@@ -121,6 +121,8 @@
     "ldap_username_attr": { "type": "string", "default": "uid" },
     "ldap_timeout_ms": { "type": "integer", "minimum": 0, "default": 5000 },
     "ldap_ca_file": { "type": ["string", "null"] },
+    "ldap_required_group": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "ldap_group_attr": { "type": "string", "default": "memberOf" },
     "policy": {
       "type": "string"
     },

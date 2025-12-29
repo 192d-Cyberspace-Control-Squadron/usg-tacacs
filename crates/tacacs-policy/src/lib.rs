@@ -23,6 +23,8 @@ pub struct RuleConfig {
     pub pattern: String,
     #[serde(default)]
     pub users: Vec<String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -86,6 +88,7 @@ pub struct Rule {
     pub priority: i32,
     pub effect: Effect,
     pub users: Vec<String>,
+    pub groups: Vec<String>,
     pub regex: Regex,
     pub order: usize,
 }
@@ -145,11 +148,17 @@ impl PolicyEngine {
                 .into_iter()
                 .map(|u| u.to_lowercase())
                 .collect::<Vec<_>>();
+            let groups = rule
+                .groups
+                .into_iter()
+                .map(|g| g.to_lowercase())
+                .collect::<Vec<_>>();
             rules.push(Rule {
                 id: rule.id,
                 priority: rule.priority,
                 effect: rule.effect,
                 users,
+                groups,
                 regex,
                 order,
             });
@@ -198,12 +207,25 @@ impl PolicyEngine {
     }
 
     pub fn authorize(&self, user: &str, command: &str) -> Decision {
+        self.authorize_with_groups(user, &[], command)
+    }
+
+    pub fn authorize_with_groups(&self, user: &str, groups: &[String], command: &str) -> Decision {
         let normalized_user = user.to_lowercase();
+        let normalized_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
         let normalized_cmd = normalize_command(command);
 
         let mut selected: Option<&Rule> = None;
         for rule in &self.rules {
             if !rule.users.is_empty() && !rule.users.iter().any(|u| u == &normalized_user) {
+                continue;
+            }
+            if !rule.groups.is_empty()
+                && !rule
+                    .groups
+                    .iter()
+                    .any(|g| normalized_groups.iter().any(|ug| ug == g))
+            {
                 continue;
             }
             if rule.regex.is_match(&normalized_cmd) {

@@ -130,6 +130,14 @@ pub struct Args {
     /// Optional CA file for LDAPS validation.
     #[arg(long)]
     pub ldap_ca_file: Option<PathBuf>,
+
+    /// Optional LDAP group DNs required for authentication (match-any).
+    #[arg(long, value_name = "GROUP_DN", num_args = 0..)]
+    pub ldap_required_group: Vec<String>,
+
+    /// LDAP attribute to read group membership from (default: memberOf).
+    #[arg(long, default_value = "memberOf")]
+    pub ldap_group_attr: String,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {
