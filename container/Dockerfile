@@ -11,6 +11,10 @@ FROM alpine:latest
 RUN apk add --no-cache ca-certificates
 WORKDIR /app
 
+# Create non-root runtime user for tacacs
+RUN adduser -D -H -s /sbin/nologin tacacs
+USER tacacs
+
 COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/usg-tacacs-server /usr/local/bin/usg-tacacs
 
 EXPOSE 300/tcp 49/tcp

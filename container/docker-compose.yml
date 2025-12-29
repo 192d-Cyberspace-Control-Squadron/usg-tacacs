@@ -5,7 +5,10 @@ services:
     image: frrouting/frr:10.0.1
     restart: unless-stopped
     network_mode: host
-    privileged: true
+    privileged: false
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     volumes:
       - ./frr/daemons:/etc/frr/daemons:ro
       - ./frr/frr.conf:/etc/frr/frr.conf:ro
@@ -22,6 +25,22 @@ services:
     image: haproxy:lts-alpine
     restart: unless-stopped
     network_mode: host
+    user: "99:99"
+    read_only: true
+    cap_drop:
+      - NET_ADMIN
+      - NET_RAW
+    cap_add:
+      - NET_BIND_SERVICE
+    tmpfs:
+      - /run/haproxy
+      - /var/lib/haproxy
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: "256M"
     volumes:
       - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
@@ -35,6 +54,20 @@ services:
     image: usg-tacacs:latest
     restart: unless-stopped
     network_mode: host
+    user: "1000:1000"
+    read_only: true
+    cap_drop:
+      - NET_ADMIN
+      - NET_RAW
+    cap_add:
+      - NET_BIND_SERVICE
+    tmpfs:
+      - /tmp
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: "256M"
     command:
       ["/usr/local/bin/usg-tacacs", "--config", "/etc/usg-tacacs/config.json"]
     volumes:
