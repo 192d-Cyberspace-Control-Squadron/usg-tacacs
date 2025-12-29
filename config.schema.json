@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "usg-tacacs-server config",
+  "type": "object",
+  "properties": {
+    "listen_tls": {
+      "type": "string",
+      "pattern": "^.+:\\d+$"
+    },
+    "listen_legacy": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^.+:\\d+$"
+    },
+    "tls_cert": {
+      "type": "string"
+    },
+    "tls_key": {
+      "type": "string"
+    },
+    "client_ca": {
+      "type": "string"
+    },
+    "tls_trust_root": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "secret": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 8
+    },
+    "forbid_unencrypted": {
+      "type": "boolean",
+      "default": true
+    },
+    "tls_psk": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "user_password": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^.+:.+$"
+      },
+      "default": []
+    },
+    "ascii_attempt_limit": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 5
+    },
+    "ascii_user_attempt_limit": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 3
+    },
+    "ascii_pass_attempt_limit": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 5
+    },
+    "ascii_backoff_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "ascii_backoff_max_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 5000
+    },
+    "ascii_lockout_limit": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "single_connect_idle_secs": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 300
+    },
+    "single_connect_keepalive_secs": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 120
+    },
+    "max_connections_per_ip": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 50
+    },
+    "tls_allowed_client_cn": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "tls_allowed_client_san": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "policy": {
+      "type": "string"
+    },
+    "schema": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "check_policy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "listen_tls",
+    "tls_cert",
+    "tls_key",
+    "client_ca",
+    "policy"
+  ],
+  "additionalProperties": false
+}
