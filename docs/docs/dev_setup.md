@@ -1,3 +1,7 @@
+---
+icon: lucide/code
+---
+
 # Development environment setup
 
 This project is Rust-first, with a small docs site under `docs/`. Below are steps to set up both code and docs.

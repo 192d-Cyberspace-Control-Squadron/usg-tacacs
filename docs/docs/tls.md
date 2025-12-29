@@ -1,3 +1,7 @@
+---
+icon: lucide/shield-check
+---
+
 # TLS and mTLS
 
 `usg-tacacs` defaults to TLS 1.3 with mutual authentication on `listen_tls` (TCP/300 by default). Legacy TACACS+ on TCP/49 is optional; when enabled, obfuscation is required if a shared secret exists.
