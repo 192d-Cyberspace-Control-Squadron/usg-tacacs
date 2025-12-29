@@ -439,6 +439,16 @@ mod tests {
         let doc = PolicyDocument {
             default_allow: false,
             shell_start: HashMap::new(),
+            ascii_prompts: None,
+            ascii_user_prompts: HashMap::new(),
+            ascii_password_prompts: HashMap::new(),
+            ascii_port_prompts: HashMap::new(),
+            ascii_remaddr_prompts: HashMap::new(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: Vec::new(),
+            raw_server_msg_deny_prefixes: Vec::new(),
+            raw_server_msg_user_overrides: HashMap::new(),
+            ascii_messages: None,
             rules: vec![
                 RuleConfig {
                     id: "allow1".into(),

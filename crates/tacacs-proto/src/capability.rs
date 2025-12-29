@@ -105,3 +105,28 @@ pub fn capability_request(
         tlvs: Vec::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Header;
+
+    #[test]
+    fn roundtrip_encode_decode() {
+        let cap = capability_request(0xdead_beef, 0x0009, CapabilityFlags(0x03));
+        let body = encode_capability(&cap).expect("encode");
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_CAPABILITY,
+            seq_no: 1,
+            flags: 0,
+            session_id: cap.header.session_id,
+            length: body.len() as u32,
+        };
+        let parsed = parse_capability_body(header, &body).expect("parse");
+        assert_eq!(parsed.version, cap.version);
+        assert_eq!(parsed.flags, cap.flags);
+        assert_eq!(parsed.vendor, cap.vendor);
+        assert_eq!(parsed.capabilities.0, cap.capabilities.0);
+    }
+}
