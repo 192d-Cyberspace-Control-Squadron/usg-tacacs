@@ -17,6 +17,7 @@ You can configure via CLI flags or JSON (`config.example.json` / `config.schema.
 - `tls_psk` (string|null): TLS pre-shared key (optional).
 - `secret` (string|null, minLength 8): TACACS+ shared secret for obfuscation (legacy listener).
 - `forbid_unencrypted` (bool, default true): drop requests with `TAC_PLUS_UNENCRYPTED_FLAG`.
+- `legacy_nad_secret` (array<object>): per-NAD legacy secrets; when set, legacy connections must originate from a listed IP and will use that IP’s secret. Each entry: `{"ip": "192.0.2.10", "secret": "at-least-8-bytes"}`.
 - `single_connect_idle_secs` (int, default 300): idle timeout for single-connection sessions.
 - `single_connect_keepalive_secs` (int, default 120): keepalive timer for single-connection sessions.
 - `max_connections_per_ip` (int, default 50): per-IP connection cap.

@@ -1,8 +1,8 @@
+use crate::auth::LdapConfig;
 use crate::config::{Args, credentials_map};
 use crate::server::{
     ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
 };
-use crate::auth::LdapConfig;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::collections::HashMap;
@@ -42,6 +42,22 @@ async fn main() -> Result<()> {
         .secret
         .as_ref()
         .map(|s| Arc::new(s.clone().into_bytes()));
+    for (ip, sec) in &args.legacy_nad_secret {
+        if sec.len() < MIN_SECRET_LEN {
+            bail!(
+                "legacy NAD secret for {} must be at least {} bytes",
+                ip,
+                MIN_SECRET_LEN
+            );
+        }
+    }
+    let legacy_nad_secrets: Arc<std::collections::HashMap<std::net::IpAddr, Arc<Vec<u8>>>> =
+        Arc::new(
+            args.legacy_nad_secret
+                .iter()
+                .map(|(ip, sec)| (*ip, Arc::new(sec.clone().into_bytes())))
+                .collect(),
+        );
     if let (Some(secret), Some(psk)) = (args.secret.as_ref(), args.tls_psk.as_ref()) {
         if secret == psk {
             bail!("TACACS+ shared secret must not match TLS PSK");
@@ -150,14 +166,20 @@ async fn main() -> Result<()> {
     }
 
     if let Some(addr) = args.listen_legacy {
-        if shared_secret.as_deref().map(|s| s.len()).unwrap_or(0) < MIN_SECRET_LEN {
+        let default_ok = shared_secret
+            .as_deref()
+            .map(|s| s.len() >= MIN_SECRET_LEN)
+            .unwrap_or(false);
+        let any_nad = !legacy_nad_secrets.is_empty();
+        if !default_ok && !any_nad {
             bail!(
-                "legacy TACACS+ requires a shared secret of at least {} bytes",
+                "legacy TACACS+ requires a shared secret of at least {} bytes or per-NAD secrets",
                 MIN_SECRET_LEN
             );
         }
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
+        let nad_secrets = legacy_nad_secrets.clone();
         let credentials = credentials.clone();
         let ascii_attempt_limit = args.ascii_attempt_limit;
         let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
@@ -185,6 +207,7 @@ async fn main() -> Result<()> {
                 single_connect_keepalive_secs,
                 conn_limiter,
                 ldap_config,
+                nad_secrets,
             )
             .await
             {

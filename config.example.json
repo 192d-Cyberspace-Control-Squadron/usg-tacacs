@@ -6,6 +6,10 @@
   "client_ca": "certs/client-ca.pem",
   "tls_trust_root": [],
   "secret": "supersecret123",
+  "legacy_nad_secret": [
+    { "ip": "192.0.2.10", "secret": "router-strong-secret" },
+    { "ip": "192.0.2.11", "secret": "switch-strong-secret" }
+  ],
   "forbid_unencrypted": true,
   "tls_psk": null,
   "user_password": ["alice:password1", "bob:password2"],

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use crate::auth::{verify_pap_bytes, verify_pap_bytes_username, LdapConfig};
+use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
 use openssl::rand::rand_bytes;
 use std::collections::HashMap;
 use std::sync::Arc;

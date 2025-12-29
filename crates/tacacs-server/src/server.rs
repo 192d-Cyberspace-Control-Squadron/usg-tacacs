@@ -4,8 +4,8 @@ use crate::ascii::{
     username_for_policy,
 };
 use crate::auth::{
-    handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
-    verify_pap_bytes_username, verify_password_sources, LdapConfig,
+    LdapConfig, handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
+    verify_pap_bytes_username, verify_password_sources,
 };
 use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
@@ -16,7 +16,7 @@ use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -701,6 +701,7 @@ pub async fn serve_legacy(
     single_connect_keepalive_secs: u64,
     conn_limiter: ConnLimiter,
     ldap: Option<Arc<LdapConfig>>,
+    nad_secrets: Arc<HashMap<IpAddr, Arc<Vec<u8>>>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -711,6 +712,7 @@ pub async fn serve_legacy(
         let policy = policy.clone();
         let secret = secret.clone();
         let credentials = credentials.clone();
+        let nad_secrets = nad_secrets.clone();
         let ascii_attempt_limit = ascii_attempt_limit;
         let ascii_user_attempt_limit = ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
@@ -730,11 +732,20 @@ pub async fn serve_legacy(
                     return;
                 }
             };
+            let conn_secret = if nad_secrets.is_empty() {
+                secret.clone()
+            } else {
+                nad_secrets.get(&peer_addr.ip()).cloned()
+            };
+            if conn_secret.is_none() {
+                warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
+                return;
+            }
             if let Err(err) = handle_connection(
                 socket,
                 policy,
                 format!("{peer_addr}"),
-                secret,
+                conn_secret,
                 credentials,
                 ascii_attempt_limit,
                 ascii_user_attempt_limit,

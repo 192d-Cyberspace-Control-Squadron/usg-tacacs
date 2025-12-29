@@ -68,7 +68,12 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
     let user_dn = SearchEntry::construct(entry).dn;
     if !cfg.required_group.is_empty() {
         let search = ldap
-            .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+            .search(
+                &cfg.search_base,
+                Scope::Subtree,
+                &filter,
+                vec![&cfg.group_attr],
+            )
             .and_then(|r| r.success());
         if let Ok((entries, _)) = search {
             if let Some(entry) = entries.into_iter().next() {
@@ -105,23 +110,28 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
     let Ok(mut ldap) = LdapConn::with_settings(settings, &cfg.url) else {
         return Vec::new();
     };
-    if ldap.simple_bind(&cfg.bind_dn, &cfg.bind_password).and_then(|r| r.success()).is_err() {
+    if ldap
+        .simple_bind(&cfg.bind_dn, &cfg.bind_password)
+        .and_then(|r| r.success())
+        .is_err()
+    {
         return Vec::new();
     }
     let filter = format!("({}={})", cfg.username_attr, username);
     let search = ldap
-        .search(&cfg.search_base, Scope::Subtree, &filter, vec![&cfg.group_attr])
+        .search(
+            &cfg.search_base,
+            Scope::Subtree,
+            &filter,
+            vec![&cfg.group_attr],
+        )
         .and_then(|r| r.success());
     let Ok((entries, _)) = search else {
         return Vec::new();
     };
     if let Some(entry) = entries.into_iter().next() {
         let se = SearchEntry::construct(entry);
-        let groups = se
-            .attrs
-            .get(&cfg.group_attr)
-            .cloned()
-            .unwrap_or_default();
+        let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
         return groups.into_iter().map(|g| g.to_lowercase()).collect();
     }
     Vec::new()

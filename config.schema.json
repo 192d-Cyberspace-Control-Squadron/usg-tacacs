@@ -37,6 +37,19 @@
       ],
       "minLength": 8
     },
+    "legacy_nad_secret": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ip": { "type": "string", "format": "ipv4" },
+          "secret": { "type": "string", "minLength": 8 }
+        },
+        "required": ["ip", "secret"],
+        "additionalProperties": false
+      },
+      "default": []
+    },
     "forbid_unencrypted": {
       "type": "boolean",
       "default": true

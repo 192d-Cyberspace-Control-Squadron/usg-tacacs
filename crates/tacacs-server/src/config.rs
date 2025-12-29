@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use clap::Parser;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -138,6 +138,10 @@ pub struct Args {
     /// LDAP attribute to read group membership from (default: memberOf).
     #[arg(long, default_value = "memberOf")]
     pub ldap_group_attr: String,
+
+    /// Legacy TACACS+ per-NAD secrets (IP:SECRET). When set, only listed NADs may use legacy TACACS+.
+    #[arg(long, value_parser = parse_nad_secret, value_name = "IP:SECRET", num_args = 0..)]
+    pub legacy_nad_secret: Vec<(IpAddr, String)>,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {
@@ -158,4 +162,21 @@ fn parse_user_password(s: &str) -> std::result::Result<(String, String), String>
         return Err("user cannot be empty".into());
     }
     Ok((user, pass))
+}
+
+fn parse_nad_secret(s: &str) -> std::result::Result<(IpAddr, String), String> {
+    let mut parts = s.splitn(2, ':');
+    let ip = parts
+        .next()
+        .ok_or_else(|| "missing NAD IP".to_string())?
+        .parse::<IpAddr>()
+        .map_err(|e| format!("invalid IP: {e}"))?;
+    let secret = parts
+        .next()
+        .ok_or_else(|| "missing secret".to_string())?
+        .to_string();
+    if secret.is_empty() {
+        return Err("secret cannot be empty".into());
+    }
+    Ok((ip, secret))
 }

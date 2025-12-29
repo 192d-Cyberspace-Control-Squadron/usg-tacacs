@@ -478,6 +478,7 @@ mod tests {
                     effect: Effect::Allow,
                     pattern: "show.*".into(),
                     users: vec![],
+                    groups: vec![],
                 },
                 RuleConfig {
                     id: "deny1".into(),
@@ -485,6 +486,7 @@ mod tests {
                     effect: Effect::Deny,
                     pattern: "show.*".into(),
                     users: vec![],
+                    groups: vec![],
                 },
                 RuleConfig {
                     id: "allow2".into(),
@@ -492,6 +494,7 @@ mod tests {
                     effect: Effect::Allow,
                     pattern: "show.*".into(),
                     users: vec![],
+                    groups: vec![],
                 },
             ],
         };

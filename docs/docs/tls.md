@@ -14,6 +14,7 @@
 - `tls_allowed_client_cn` / `tls_allowed_client_san` (arrays): allowlists for client identities; match-any. Use SAN when possible.
 - `tls_psk`: pre-shared key for PSK-based TLS (if you enable it).
 - `secret`: TACACS+ shared secret (used for obfuscation on legacy TCP/49); min length 8. `forbid_unencrypted` true by default to drop `TAC_PLUS_UNENCRYPTED_FLAG`.
+- `legacy_nad_secret`: per-NAD legacy secrets (IP + secret). When present, legacy connections must come from a listed IP; unmatched legacy peers are rejected.
 
 ## Example run
 
