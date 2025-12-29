@@ -41,6 +41,20 @@ LockPersonality=yes
 
 If you require chroot/jail, place certs/policy inside the jail and adjust paths accordingly.
 
+## Supply-chain hygiene
+
+- Build reproducibly with locked deps: `cargo build --locked`; keep `Cargo.lock` under version control.
+- Vendor third-party crates for offline/attestable builds: `cargo vendor --locked vendor/` and point `CARGO_HOME`/`CARGO_REGISTRIES_CRATES_IO_PROTOCOL=file`.
+- Generate an SBOM for releases (e.g., `syft packages dir:. -o spdx-json > sbom.json` or `cargo audit-sbom`).
+- Sign release artifacts/hashes (e.g., `sha256sum target/release/usg-tacacs-* | gpg --clearsign`).
+- Optional: run `cargo audit` / `cargo deny check` in CI to catch vulnerable/banlisted crates.
+
+## Logging/auditing guidance
+
+- UTC timestamps enabled by default via tracing subscriber; include peer/user/session/outcome fields in audit logs for correlation.
+- Forward logs to a central collector with integrity (e.g., TLS/syslog with signing) and set up rotation/retention at the service manager level (systemd journald or logrotate).
+- Consider shipping signed hash manifests of log files for tamper detection if storing locally.
+
 ## Validate policy
 
 cargo run -p tacacs-server -- \
