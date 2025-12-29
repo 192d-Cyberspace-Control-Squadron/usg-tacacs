@@ -18,3 +18,4 @@ usg-tacacs-policy = { path = "../tacacs-policy" }
 usg-tacacs-proto = { path = "../tacacs-proto" }
 openssl = "0.10"
 hex = "0.4"
+ldap3 = { version = "0.11", default-features = false, features = ["tls-native", "sync"] }

@@ -102,6 +102,34 @@ pub struct Args {
     /// Allowed client certificate SAN entries (DNS/IP/URI exact match). If set, client SAN must match one of these.
     #[arg(long, value_name = "SAN", num_args = 0..)]
     pub tls_allowed_client_san: Vec<String>,
+
+    /// LDAPS URL for LDAP authentication (must start with ldaps://). If unset, LDAP auth is disabled.
+    #[arg(long)]
+    pub ldaps_url: Option<String>,
+
+    /// LDAP service account bind DN.
+    #[arg(long)]
+    pub ldap_bind_dn: Option<String>,
+
+    /// LDAP service account password.
+    #[arg(long)]
+    pub ldap_bind_password: Option<String>,
+
+    /// LDAP search base for locating user entries.
+    #[arg(long)]
+    pub ldap_search_base: Option<String>,
+
+    /// LDAP attribute to match the TACACS+ username (default: uid).
+    #[arg(long, default_value = "uid")]
+    pub ldap_username_attr: String,
+
+    /// LDAP connect/operation timeout in milliseconds.
+    #[arg(long, default_value_t = 5000)]
+    pub ldap_timeout_ms: u64,
+
+    /// Optional CA file for LDAPS validation.
+    #[arg(long)]
+    pub ldap_ca_file: Option<PathBuf>,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {

@@ -3,7 +3,10 @@ use crate::ascii::{
     AsciiConfig, calc_ascii_backoff_capped, field_for_policy, handle_ascii_continue,
     username_for_policy,
 };
-use crate::auth::{handle_chap_continue, verify_pap, verify_pap_bytes, verify_pap_bytes_username};
+use crate::auth::{
+    handle_chap_continue, verify_pap, verify_pap_bytes, verify_pap_bytes_username,
+    verify_password_sources, LdapConfig,
+};
 use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
 use crate::tls::build_tls_config;
@@ -616,6 +619,7 @@ pub async fn serve_tls(
     conn_limiter: ConnLimiter,
     allowed_cn: Vec<String>,
     allowed_san: Vec<String>,
+    ldap: Option<Arc<LdapConfig>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -636,6 +640,7 @@ pub async fn serve_tls(
         let limiter = conn_limiter.clone();
         let allowed_cn = allowed_cn.clone();
         let allowed_san = allowed_san.clone();
+        let ldap = ldap.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
             let guard = match limiter.try_acquire(&peer_ip).await {
@@ -668,6 +673,7 @@ pub async fn serve_tls(
                         single_connect_idle_secs,
                         single_connect_keepalive_secs,
                         guard,
+                        ldap.clone(),
                     )
                     .await
                     {
@@ -694,6 +700,7 @@ pub async fn serve_legacy(
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
     conn_limiter: ConnLimiter,
+    ldap: Option<Arc<LdapConfig>>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -713,6 +720,7 @@ pub async fn serve_legacy(
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
         let limiter = conn_limiter.clone();
+        let ldap = ldap.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
             let guard = match limiter.try_acquire(&peer_ip).await {
@@ -737,6 +745,7 @@ pub async fn serve_legacy(
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
                 guard,
+                ldap.clone(),
             )
             .await
             {
@@ -761,6 +770,7 @@ async fn handle_connection<S>(
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
     _guard: ConnGuard,
+    ldap: Option<Arc<LdapConfig>>,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -1398,6 +1408,18 @@ where
                                         &start.data,
                                         &credentials,
                                     )
+                                } || {
+                                    if let Some(user) = state.username.as_deref() {
+                                        verify_password_sources(
+                                            Some(user),
+                                            &start.data,
+                                            &credentials,
+                                            ldap.as_ref(),
+                                        )
+                                        .await
+                                    } else {
+                                        false
+                                    }
                                 };
                                 if !ok {
                                     if let Some(delay) = calc_ascii_backoff_capped(
@@ -1464,7 +1486,14 @@ where
                                     return Ok(());
                                 }
                             };
-                            let ok = verify_pap(&start.user, &password, &credentials);
+                            let ok = verify_pap(&start.user, &password, &credentials)
+                                || verify_password_sources(
+                                    Some(&start.user),
+                                    password.as_bytes(),
+                                    &credentials,
+                                    ldap.as_ref(),
+                                )
+                                .await;
                             let policy = policy.read().await;
                             let svc_str = start.service.to_string();
                             let act_str = start.action.to_string();
@@ -1556,6 +1585,7 @@ where
                                 &policy,
                                 &credentials,
                                 &ascii_cfg,
+                                ldap.as_ref(),
                             )
                             .await
                         }

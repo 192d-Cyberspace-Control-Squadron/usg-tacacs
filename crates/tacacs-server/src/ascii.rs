@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use crate::auth::{verify_pap_bytes, verify_pap_bytes_username};
+use crate::auth::{verify_pap_bytes, verify_pap_bytes_username, LdapConfig};
 use openssl::rand::rand_bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,6 +107,7 @@ pub async fn handle_ascii_continue(
     policy: &Arc<RwLock<PolicyEngine>>,
     credentials: &HashMap<String, String>,
     config: &AsciiConfig,
+    ldap: Option<&Arc<LdapConfig>>,
 ) -> AuthenReply {
     let policy_user = username_for_policy(state.username.as_deref(), state.username_raw.as_ref());
     let policy_port = field_for_policy(state.port.as_deref(), state.port_raw.as_ref());
@@ -241,12 +242,19 @@ pub async fn handle_ascii_continue(
             }
         } else {
             state.ascii_need_pass = false;
-            let ok = if let Some(raw_user) = state.username_raw.as_ref() {
+            let mut ok = if let Some(raw_user) = state.username_raw.as_ref() {
                 verify_pap_bytes_username(raw_user, cont_data, credentials)
             } else {
                 let user = state.username.clone().unwrap_or_default();
                 verify_pap_bytes(&user, cont_data, credentials)
             };
+            if !ok {
+                if let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap) {
+                    if let Ok(pwd) = std::str::from_utf8(cont_data) {
+                        ok = ldap_cfg.authenticate(user, pwd).await;
+                    }
+                }
+            }
             if !ok {
                 if let Some(delay) = calc_ascii_backoff_capped(
                     config.backoff_ms,

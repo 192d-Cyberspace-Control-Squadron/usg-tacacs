@@ -114,6 +114,13 @@
       },
       "default": []
     },
+    "ldaps_url": { "type": ["string", "null"], "pattern": "^ldaps://.+" },
+    "ldap_bind_dn": { "type": ["string", "null"] },
+    "ldap_bind_password": { "type": ["string", "null"] },
+    "ldap_search_base": { "type": ["string", "null"] },
+    "ldap_username_attr": { "type": "string", "default": "uid" },
+    "ldap_timeout_ms": { "type": "integer", "minimum": 0, "default": 5000 },
+    "ldap_ca_file": { "type": ["string", "null"] },
     "policy": {
       "type": "string"
     },

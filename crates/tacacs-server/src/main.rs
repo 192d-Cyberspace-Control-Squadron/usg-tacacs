@@ -2,10 +2,12 @@ use crate::config::{Args, credentials_map};
 use crate::server::{
     ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
 };
+use crate::auth::LdapConfig;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{error, warn};
 use tracing_subscriber::fmt::time::UtcTime;
@@ -51,6 +53,31 @@ async fn main() -> Result<()> {
     let single_connect_idle_secs = args.single_connect_idle_secs;
     let single_connect_keepalive_secs = args.single_connect_keepalive_secs;
     let conn_limiter = ConnLimiter::new(args.max_connections_per_ip);
+    let ldap_config: Option<Arc<LdapConfig>> = if let Some(url) = args.ldaps_url.clone() {
+        let bind_dn = args
+            .ldap_bind_dn
+            .clone()
+            .context("--ldap-bind-dn is required with --ldaps-url")?;
+        let bind_password = args
+            .ldap_bind_password
+            .clone()
+            .context("--ldap-bind-password is required with --ldaps-url")?;
+        let search_base = args
+            .ldap_search_base
+            .clone()
+            .context("--ldap-search-base is required with --ldaps-url")?;
+        Some(Arc::new(LdapConfig {
+            url,
+            bind_dn,
+            bind_password,
+            search_base,
+            username_attr: args.ldap_username_attr.clone(),
+            timeout: Duration::from_millis(args.ldap_timeout_ms),
+            ca_file: args.ldap_ca_file.clone(),
+        }))
+    } else {
+        None
+    };
 
     let mut handles = Vec::new();
 
@@ -92,6 +119,7 @@ async fn main() -> Result<()> {
         let conn_limiter = conn_limiter.clone();
         let allowed_cn = args.tls_allowed_client_cn.clone();
         let allowed_san = args.tls_allowed_client_san.clone();
+        let ldap_config = ldap_config.clone();
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -110,6 +138,7 @@ async fn main() -> Result<()> {
                 conn_limiter,
                 allowed_cn,
                 allowed_san,
+                ldap_config,
             )
             .await
             {
@@ -137,6 +166,7 @@ async fn main() -> Result<()> {
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
         let conn_limiter = conn_limiter.clone();
+        let ldap_config = ldap_config.clone();
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_legacy(
                 addr,
@@ -152,6 +182,7 @@ async fn main() -> Result<()> {
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
                 conn_limiter,
+                ldap_config,
             )
             .await
             {

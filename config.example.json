@@ -20,6 +20,13 @@
   "max_connections_per_ip": 50,
   "tls_allowed_client_cn": [],
   "tls_allowed_client_san": [],
+  "ldaps_url": null,
+  "ldap_bind_dn": null,
+  "ldap_bind_password": null,
+  "ldap_search_base": null,
+  "ldap_username_attr": "uid",
+  "ldap_timeout_ms": 5000,
+  "ldap_ca_file": null,
   "policy": "policy/policy.example.json",
   "schema": "policy/policy.schema.json",
   "check_policy": null
