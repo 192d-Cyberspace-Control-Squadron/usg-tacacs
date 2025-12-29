@@ -38,6 +38,7 @@ pub const FLAG_UNENCRYPTED: u8 = 0x01;
 pub const FLAG_SINGLE_CONNECT: u8 = 0x04;
 const ALLOWED_FLAGS: u8 = FLAG_UNENCRYPTED | FLAG_SINGLE_CONNECT;
 pub const MIN_SECRET_LEN: usize = 8;
+const MAX_PACKET_LENGTH: u32 = 65535;
 
 pub const AUTHEN_STATUS_PASS: u8 = 0x01;
 pub const AUTHEN_STATUS_FAIL: u8 = 0x02;
@@ -95,6 +96,10 @@ where
         bail!("TACACS+ packet requires obfuscation but no secret provided");
     }
     header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
+
+    if header.length > MAX_PACKET_LENGTH {
+        bail!("TACACS+ packet length {} exceeds limit {}", header.length, MAX_PACKET_LENGTH);
+    }
 
     let mut body = vec![0u8; header.length as usize];
     reader

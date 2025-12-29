@@ -86,6 +86,10 @@ pub struct Args {
     /// Expected keepalive activity interval (seconds) for single-connection sessions; 0 disables the timeout.
     #[arg(long, default_value_t = 120)]
     pub single_connect_keepalive_secs: u64,
+
+    /// Maximum concurrent connections allowed per peer IP (0 = unlimited).
+    #[arg(long, default_value_t = 50)]
+    pub max_connections_per_ip: u32,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {

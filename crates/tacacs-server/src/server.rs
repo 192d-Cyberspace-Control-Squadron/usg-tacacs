@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
@@ -34,6 +34,65 @@ use usg_tacacs_proto::{
     validate_author_response_header, write_accounting_response, write_authen_reply,
     write_author_response,
 };
+
+#[derive(Clone)]
+pub(crate) struct ConnLimiter {
+    max_per_ip: u32,
+    counts: Arc<Mutex<HashMap<String, u32>>>,
+}
+
+impl ConnLimiter {
+    pub(crate) fn new(max_per_ip: u32) -> Self {
+        Self {
+            max_per_ip,
+            counts: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn try_acquire(&self, ip: &str) -> Option<ConnGuard> {
+        if self.max_per_ip == 0 {
+            return Some(ConnGuard {
+                ip: ip.to_string(),
+                limiter: self.clone(),
+            });
+        }
+        let mut map = self.counts.lock().await;
+        let entry = map.entry(ip.to_string()).or_insert(0);
+        if *entry >= self.max_per_ip {
+            return None;
+        }
+        *entry += 1;
+        drop(map);
+        Some(ConnGuard {
+            ip: ip.to_string(),
+            limiter: self.clone(),
+        })
+    }
+
+    async fn release(&self, ip: &str) {
+        let mut map = self.counts.lock().await;
+        if let Some(v) = map.get_mut(ip) {
+            if *v > 0 {
+                *v -= 1;
+            }
+        }
+    }
+}
+
+struct ConnGuard {
+    ip: String,
+    limiter: ConnLimiter,
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        let ip = self.ip.clone();
+        let limiter = self.limiter.clone();
+        tokio::spawn(async move {
+            limiter.release(&ip).await;
+        });
+    }
+}
 
 fn audit_event(
     event: &str,
@@ -489,6 +548,7 @@ pub async fn serve_tls(
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
+    conn_limiter: ConnLimiter,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -506,7 +566,16 @@ pub async fn serve_tls(
         let ascii_backoff_max_ms = ascii_backoff_max_ms;
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let limiter = conn_limiter.clone();
         tokio::spawn(async move {
+            let peer_ip = peer_addr.ip().to_string();
+            let guard = match limiter.try_acquire(&peer_ip).await {
+                Some(g) => g,
+                None => {
+                    warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
+                    return;
+                }
+            };
             match acceptor.accept(socket).await {
                 Ok(stream) => {
                     if let Err(err) = handle_connection(
@@ -523,6 +592,7 @@ pub async fn serve_tls(
                         ascii_lockout_limit,
                         single_connect_idle_secs,
                         single_connect_keepalive_secs,
+                        guard,
                     )
                     .await
                     {
@@ -548,6 +618,7 @@ pub async fn serve_legacy(
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
+    conn_limiter: ConnLimiter,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -566,7 +637,16 @@ pub async fn serve_legacy(
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let limiter = conn_limiter.clone();
         tokio::spawn(async move {
+            let peer_ip = peer_addr.ip().to_string();
+            let guard = match limiter.try_acquire(&peer_ip).await {
+                Some(g) => g,
+                None => {
+                    warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
+                    return;
+                }
+            };
             if let Err(err) = handle_connection(
                 socket,
                 policy,
@@ -581,6 +661,7 @@ pub async fn serve_legacy(
                 ascii_lockout_limit,
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
+                guard,
             )
             .await
             {
@@ -604,6 +685,7 @@ async fn handle_connection<S>(
     ascii_lockout_limit: u8,
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
+    _guard: ConnGuard,
 ) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,

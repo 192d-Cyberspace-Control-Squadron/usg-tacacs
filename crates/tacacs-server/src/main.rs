@@ -1,5 +1,5 @@
 use crate::config::{Args, credentials_map};
-use crate::server::{serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup};
+use crate::server::{serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup, ConnLimiter};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::collections::HashMap;
@@ -48,6 +48,7 @@ async fn main() -> Result<()> {
     let ascii_lockout_limit = args.ascii_lockout_limit;
     let single_connect_idle_secs = args.single_connect_idle_secs;
     let single_connect_keepalive_secs = args.single_connect_keepalive_secs;
+    let conn_limiter = ConnLimiter::new(args.max_connections_per_ip);
 
     let mut handles = Vec::new();
 
@@ -86,6 +87,7 @@ async fn main() -> Result<()> {
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let conn_limiter = conn_limiter.clone();
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -101,6 +103,7 @@ async fn main() -> Result<()> {
                 ascii_lockout_limit,
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
+                conn_limiter,
             )
             .await
             {
@@ -127,6 +130,7 @@ async fn main() -> Result<()> {
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let conn_limiter = conn_limiter.clone();
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_legacy(
                 addr,
@@ -141,6 +145,7 @@ async fn main() -> Result<()> {
                 ascii_lockout_limit,
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
+                conn_limiter,
             )
             .await
             {
