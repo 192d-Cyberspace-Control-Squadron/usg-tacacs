@@ -56,3 +56,27 @@ The provided configs bind on both families (`bind ... v4v6` in HAProxy, and IPv4
 - Restrict listener exposure with host firewalls; bind stats endpoints to loopback only (already 127.0.0.1:8404).
 - Pin image versions (`haproxy:lts-alpine`, `frrouting/frr:10.0.1`, Rust base) and rebuild regularly for patches.
 - Set resource limits (`deploy.resources.limits`) and connection caps in HAProxy to reduce DoS blast radius.
+
+### Suggested implementation steps
+
+1) **Non-root users**
+   - Update `container/Dockerfile` to create and `USER` switch for tacacs.
+   - For HAProxy, extend the service with `user: haproxy` or a custom non-root user if supported by the image.
+2) **Capabilities**
+   - In `container/docker-compose.yml`, add `cap_drop: [NET_ADMIN, NET_RAW]` for `haproxy` and `tacacs`.
+   - Keep FRR privileged or minimally `CAP_NET_ADMIN`/`CAP_NET_RAW` as required for BGP.
+3) **Read-only FS + tmpfs**
+   - Add `read_only: true` for `haproxy` and `tacacs`.
+   - Add `tmpfs` entries for paths that need writes (e.g., `/run/haproxy`, `/tmp`).
+4) **Secrets and volumes**
+   - Store TLS keys, policy, and config on the host or via Docker secrets.
+   - Mount secrets with restrictive permissions; avoid adding them to images or git.
+5) **Network exposure**
+   - Ensure stats (`127.0.0.1:8404`) stays loopback-only; use host firewall rules to limit inbound ports 49/300.
+   - If you don’t need host network for tacacs, consider bridge networking plus PROXY protocol for client IPs.
+6) **Resource limits**
+   - Add `deploy.resources.limits.memory` and `cpu` to `haproxy` and `tacacs` services.
+   - In HAProxy, set `maxconn` and per-backend limits; consider connection rate limits if needed.
+7) **Image hygiene**
+   - Keep pinned versions and rebuild regularly; run `docker pull` on base images before builds.
+   - Consider vulnerability scans (e.g., `trivy`) as part of CI.
