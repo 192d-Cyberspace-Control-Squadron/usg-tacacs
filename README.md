@@ -11,6 +11,8 @@ Rust TACACS+ server with:
 - Command normalization + regex auto-anchoring
 - Capability/keepalive packet support (vendor-specific, single-connect/keepalive bits, request/ack)
 - Hardened RFC 8907 semantics: authz protocol/service checks, explicit FOLLOW rejection, richer audit telemetry
+- LDAP authentication (LDAPS only) with service-account bind + match-any required groups, with group-aware policy matching
+- Client-certificate allowlists (CN/SAN), optional extra trust roots, and per-peer connection limits
 - Process hardening guidance: run as non-root, optionally chroot/jail, set RLIMITs, and drop ambient caps (see below)
 
 ## Process hardening (recommended)
@@ -69,3 +71,34 @@ cargo run -p tacacs-server -- \
   --tls-key ./certs/server-key.pem \
   --client-ca ./certs/client-ca.pem \
   --policy ./policy/policy.example.json
+
+## LDAP authentication (LDAPS only)
+
+Enable LDAPS with a service account and optional required groups (match-any):
+
+```
+cargo run -p tacacs-server -- \
+  --listen-tls 0.0.0.0:300 \
+  --tls-cert ./certs/server.pem \
+  --tls-key ./certs/server-key.pem \
+  --client-ca ./certs/client-ca.pem \
+  --policy ./policy/policy.example.json \
+  --ldaps-url ldaps://ldap.example.com \
+  --ldap-bind-dn "cn=svc,ou=svc,dc=example,dc=com" \
+  --ldap-bind-password "secret" \
+  --ldap-search-base "dc=example,dc=com" \
+  --ldap-required-group "cn=netops,ou=groups,dc=example,dc=com" \
+  --ldap-required-group "cn=secops,ou=groups,dc=example,dc=com" \
+  --ldap-group-attr memberOf \
+  --ldap-username-attr uid
+```
+
+Notes:
+- Only LDAPS is permitted; StartTLS is rejected.
+- Group checks are match-any; group names are compared case-insensitively.
+- Policy rules can also declare `groups` to require group membership for authorization decisions.
+
+## Configuration files
+
+- `config.example.json` / `config.schema.json` cover server flags including TLS trust roots (`tls_trust_root`), CN/SAN allowlists (`tls_allowed_client_cn`/`tls_allowed_client_san`), max connections per IP, ASCII backoff/lockout, single-connect idle/keepalive timers, and LDAP options above.
+- `policy.example.json` / `policy.schema.json` describe authorization rules; rules now support `groups` (match-any, combined with `users` and regex command match). Default shell PASS-ADD attrs are added when none are supplied.
