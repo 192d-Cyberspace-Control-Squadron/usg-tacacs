@@ -46,3 +46,13 @@ Make sure to:
 ## IPv4 and IPv6
 
 The provided configs bind on both families (`bind ... v4v6` in HAProxy, and IPv4/IPv6 networks in FRR). Ensure your host and upstream routers are configured for dual-stack.
+
+## Hardening guidance
+
+- Use non-root users where possible (HAProxy and tacacs can drop root; FRR typically requires caps/host net for BGP).
+- Drop unnecessary capabilities in compose: HAProxy/tacacs can drop `NET_ADMIN`, `NET_RAW`, etc.; keep only what is needed.
+- Make filesystems read-only (`read_only: true`) and mount tmpfs for runtime state (e.g., HAProxy PID/run dir) if you adapt the compose.
+- Keep secrets out of images: mount certs/keys/policy/config via volumes or Docker secrets; avoid baking them into images.
+- Restrict listener exposure with host firewalls; bind stats endpoints to loopback only (already 127.0.0.1:8404).
+- Pin image versions (`haproxy:lts-alpine`, `frrouting/frr:10.0.1`, Rust base) and rebuild regularly for patches.
+- Set resource limits (`deploy.resources.limits`) and connection caps in HAProxy to reduce DoS blast radius.
