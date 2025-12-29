@@ -98,7 +98,11 @@ where
     header::validate_request_header(&header, None, ALLOWED_FLAGS, true, VERSION >> 4)?;
 
     if header.length > MAX_PACKET_LENGTH {
-        bail!("TACACS+ packet length {} exceeds limit {}", header.length, MAX_PACKET_LENGTH);
+        bail!(
+            "TACACS+ packet length {} exceeds limit {}",
+            header.length,
+            MAX_PACKET_LENGTH
+        );
     }
 
     let mut body = vec![0u8; header.length as usize];

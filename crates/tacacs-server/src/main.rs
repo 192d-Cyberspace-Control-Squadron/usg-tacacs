@@ -1,5 +1,7 @@
 use crate::config::{Args, credentials_map};
-use crate::server::{serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup, ConnLimiter};
+use crate::server::{
+    ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
+};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::collections::HashMap;
@@ -88,6 +90,8 @@ async fn main() -> Result<()> {
         let single_connect_idle_secs = single_connect_idle_secs;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
         let conn_limiter = conn_limiter.clone();
+        let allowed_cn = args.tls_allowed_client_cn.clone();
+        let allowed_san = args.tls_allowed_client_san.clone();
         handles.push(tokio::spawn(async move {
             if let Err(err) = serve_tls(
                 addr,
@@ -104,6 +108,8 @@ async fn main() -> Result<()> {
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
                 conn_limiter,
+                allowed_cn,
+                allowed_san,
             )
             .await
             {

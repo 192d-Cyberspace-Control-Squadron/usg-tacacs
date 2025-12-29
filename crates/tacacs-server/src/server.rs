@@ -9,7 +9,9 @@ use crate::session::SingleConnectState;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
 use hex;
+use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
+use openssl::x509::X509;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,6 +22,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::server::TlsStream;
 use tracing::{debug, info, warn};
 use usg_tacacs_policy::{PolicyEngine, validate_policy_file};
 use usg_tacacs_proto::{
@@ -91,6 +94,68 @@ impl Drop for ConnGuard {
         tokio::spawn(async move {
             limiter.release(&ip).await;
         });
+    }
+}
+
+fn enforce_client_cert_policy(
+    stream: &TlsStream<tokio::net::TcpStream>,
+    peer: &SocketAddr,
+    allowed_cn: &[String],
+    allowed_san: &[String],
+) -> Result<()> {
+    if allowed_cn.is_empty() && allowed_san.is_empty() {
+        return Ok(());
+    }
+    let (_, conn) = stream.get_ref();
+    let certs = conn
+        .peer_certificates()
+        .ok_or_else(|| anyhow::anyhow!("missing client certificate"))?;
+    let leaf = certs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("no client certificate presented"))?;
+    let x509 = X509::from_der(leaf.as_ref())
+        .with_context(|| format!("parsing client certificate from {peer}"))?;
+    let mut names: Vec<String> = Vec::new();
+    for entry in x509.subject_name().entries_by_nid(Nid::COMMONNAME) {
+        if let Ok(val) = entry.data().as_utf8() {
+            names.push(val.to_string());
+        }
+    }
+    if let Some(san) = x509.subject_alt_names() {
+        for name in san {
+            if let Some(dns) = name.dnsname() {
+                names.push(dns.to_string());
+            }
+            if let Some(uri) = name.uri() {
+                names.push(uri.to_string());
+            }
+            if let Some(ip) = name.ipaddress() {
+                if ip.len() == 4 {
+                    let mut oct = [0u8; 4];
+                    oct.copy_from_slice(ip);
+                    names.push(std::net::Ipv4Addr::from(oct).to_string());
+                } else if ip.len() == 16 {
+                    let mut oct = [0u8; 16];
+                    oct.copy_from_slice(ip);
+                    names.push(std::net::Ipv6Addr::from(oct).to_string());
+                }
+            }
+        }
+    }
+    let mut allowed = false;
+    for n in &names {
+        if allowed_cn.iter().any(|a| a == n) || allowed_san.iter().any(|a| a == n) {
+            allowed = true;
+            break;
+        }
+    }
+    if !allowed {
+        Err(anyhow::anyhow!(
+            "client certificate identity not allowed: {:?}",
+            names
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -549,6 +614,8 @@ pub async fn serve_tls(
     single_connect_idle_secs: u64,
     single_connect_keepalive_secs: u64,
     conn_limiter: ConnLimiter,
+    allowed_cn: Vec<String>,
+    allowed_san: Vec<String>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr)
         .await
@@ -567,6 +634,8 @@ pub async fn serve_tls(
         let ascii_lockout_limit = ascii_lockout_limit;
         let single_connect_keepalive_secs = single_connect_keepalive_secs;
         let limiter = conn_limiter.clone();
+        let allowed_cn = allowed_cn.clone();
+        let allowed_san = allowed_san.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
             let guard = match limiter.try_acquire(&peer_ip).await {
@@ -578,6 +647,12 @@ pub async fn serve_tls(
             };
             match acceptor.accept(socket).await {
                 Ok(stream) => {
+                    if let Err(err) =
+                        enforce_client_cert_policy(&stream, &peer_addr, &allowed_cn, &allowed_san)
+                    {
+                        warn!(error = %err, peer = %peer_addr, "TLS client cert rejected");
+                        return;
+                    }
                     if let Err(err) = handle_connection(
                         stream,
                         policy,

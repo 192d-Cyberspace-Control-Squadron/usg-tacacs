@@ -90,6 +90,14 @@ pub struct Args {
     /// Maximum concurrent connections allowed per peer IP (0 = unlimited).
     #[arg(long, default_value_t = 50)]
     pub max_connections_per_ip: u32,
+
+    /// Allowed client certificate Common Names (exact match). If set, client CN must match one of these.
+    #[arg(long, value_name = "CN", num_args = 0..)]
+    pub tls_allowed_client_cn: Vec<String>,
+
+    /// Allowed client certificate SAN entries (DNS/IP/URI exact match). If set, client SAN must match one of these.
+    #[arg(long, value_name = "SAN", num_args = 0..)]
+    pub tls_allowed_client_san: Vec<String>,
 }
 
 pub fn credentials_map(args: &Args) -> HashMap<String, String> {
