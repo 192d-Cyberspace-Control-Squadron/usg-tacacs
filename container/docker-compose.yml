@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  frr:
+    image: frrouting/frr:10.0.1
+    restart: unless-stopped
+    network_mode: host
+    privileged: true
+    volumes:
+      - ./frr/daemons:/etc/frr/daemons:ro
+      - ./frr/frr.conf:/etc/frr/frr.conf:ro
+      - ./frr/health-watch.sh:/health-watch.sh:ro
+    entrypoint: ["/bin/sh","-c"]
+    command: "/health-watch.sh & exec /usr/lib/frr/docker-start"
+    healthcheck:
+      test: ["CMD", "vtysh", "-c", "show ip bgp summary"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  haproxy:
+    image: haproxy:lts-alpine
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    depends_on:
+      frr:
+        condition: service_healthy
+      tacacs:
+        condition: service_started
+
+  tacacs:
+    build: .
+    image: usg-tacacs:latest
+    restart: unless-stopped
+    network_mode: host
+    command:
+      ["/usr/local/bin/usg-tacacs", "--config", "/etc/usg-tacacs/config.json"]
+    volumes:
+      - ./policy:/etc/usg-tacacs/policy:ro
+      - ./certs:/etc/usg-tacacs/certs:ro
+      - ./config.example.json:/etc/usg-tacacs/config.json:ro

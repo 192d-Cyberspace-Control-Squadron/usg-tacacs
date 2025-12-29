@@ -1,0 +1,48 @@
+---
+icon: lucide/box
+---
+
+# Container deployment
+
+This repository ships an example container stack for running `usg-tacacs` with L4 load balancing and Anycast BGP advertisement.
+
+## Artifacts
+
+- `container/Dockerfile`: multi-stage Alpine build producing a statically linked `usg-tacacs` binary (musl) exposing TCP 300 (TLS) and 49 (legacy).
+- `container/docker-compose.yml`: composes three services on host networking:
+  - `frr`: BGP speaker to originate the TACACS+ VIP(s).
+  - `haproxy`: TCP load balancer for ports 49/300 (IPv4/IPv6) with stats for health gating.
+  - `tacacs`: the TACACS+ server, configured via `/etc/usg-tacacs/config.json`.
+- `container/frr/daemons` and `container/frr/frr.conf`: minimal FRR configuration to advertise IPv4 /32 and IPv6 /128 VIPs to an upstream peer.
+- `container/frr/health-watch.sh`: polls HAProxy stats; shuts BGP neighbor when HAProxy is unhealthy, re-enables when healthy.
+- `container/haproxy/haproxy.cfg`: L4 proxy with health checks and a stats endpoint, forwarding to the local TACACS+ instance.
+
+## How it works
+
+- FRR advertises the service VIPs over BGP (`frr.conf`) to your upstream router(s). Adjust ASNs, neighbors, and VIPs before use.
+- HAProxy listens on the VIP (host network) for TCP/49 and TCP/300 and forwards to the local TACACS+ service (`127.0.0.1:49` / `:300`), with TCP health checks. HAProxy exposes stats on `127.0.0.1:8404/stats` for the FRR watcher.
+- The TACACS+ container runs with `--config /etc/usg-tacacs/config.json` mounted from the host. Place certs/policy/config under `./certs`, `./policy`, and `config.example.json` (or another config file).
+
+## Quick start (compose)
+
+```sh
+cd container
+docker compose build
+docker compose up -d
+```
+
+Make sure to:
+
+- Update `container/frr/frr.conf` with your ASN, neighbor IP(s), and desired VIPs.
+- Update `container/haproxy/haproxy.cfg` backends if TACACS+ runs on a different host/port.
+- Provide real certs/keys and a proper `config.json` (the compose mounts `config.example.json` by default).
+
+## Customization tips
+
+- **BGP/Anycast**: Change `network` statements and `neighbor` lines in `frr.conf`. Health-based withdraw is wired via `container/frr/health-watch.sh` (toggle neighbor shutdown based on HAProxy stats). Adjust ASN/neighbor name in the script to match your config.
+- **Load balancer**: Add more backends or enable PROXY protocol (`send-proxy`) if your TACACS+ server is updated to accept it for client IP preservation.
+- **Security**: Use strong secrets, CN/SAN allowlists, and restrict FRR/HAProxy containers’ privileges as your environment allows (FRR needs host net + caps for BGP).
+
+## IPv4 and IPv6
+
+The provided configs bind on both families (`bind ... v4v6` in HAProxy, and IPv4/IPv6 networks in FRR). Ensure your host and upstream routers are configured for dual-stack.
