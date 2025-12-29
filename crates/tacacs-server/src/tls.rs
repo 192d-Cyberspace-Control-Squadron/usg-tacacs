@@ -13,12 +13,20 @@ pub fn build_tls_config(
     cert: &PathBuf,
     key: &PathBuf,
     client_ca: &PathBuf,
+    extra_trust_roots: &[PathBuf],
 ) -> Result<rustls::ServerConfig> {
     let certs: Vec<CertificateDer<'_>> = load_certs(cert)?;
     let key: PrivateKeyDer<'_> = load_key(key)?;
     let mut roots: RootCertStore = RootCertStore::empty();
     for ca in load_certs(client_ca)? {
         roots.add(ca).context("adding client CA")?;
+    }
+    for ca_path in extra_trust_roots {
+        for ca in load_certs(ca_path)? {
+            roots
+                .add(ca)
+                .with_context(|| format!("adding extra trust root {}", ca_path.display()))?;
+        }
     }
 
     let client_auth = WebPkiClientVerifier::builder(roots.into())

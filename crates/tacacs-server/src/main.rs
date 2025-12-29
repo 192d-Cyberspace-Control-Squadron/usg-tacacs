@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
             .client_ca
             .as_ref()
             .context("--client-ca is required when --listen-tls is set")?;
-        let acceptor = tls_acceptor(cert, key, ca)?;
+        let acceptor = tls_acceptor(cert, key, ca, &args.tls_trust_root)?;
         let policy = shared_policy.clone();
         let secret = shared_secret.clone();
         let credentials = credentials.clone();

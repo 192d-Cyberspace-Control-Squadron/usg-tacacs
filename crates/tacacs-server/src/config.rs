@@ -39,6 +39,10 @@ pub struct Args {
     #[arg(long)]
     pub client_ca: Option<PathBuf>,
 
+    /// Additional trusted root CAs for client mTLS verification (PEM, repeatable).
+    #[arg(long, value_name = "CA_PEM", num_args = 0..)]
+    pub tls_trust_root: Vec<PathBuf>,
+
     /// Shared secret for TACACS+ body obfuscation (required for legacy, recommended otherwise).
     #[arg(long)]
     pub secret: Option<String>,

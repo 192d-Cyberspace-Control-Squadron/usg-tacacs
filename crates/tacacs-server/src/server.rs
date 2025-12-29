@@ -2023,7 +2023,12 @@ pub fn validate_policy(path: &PathBuf, schema: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-pub fn tls_acceptor(cert: &PathBuf, key: &PathBuf, ca: &PathBuf) -> Result<TlsAcceptor> {
-    let tls_config = build_tls_config(cert, key, ca)?;
+pub fn tls_acceptor(
+    cert: &PathBuf,
+    key: &PathBuf,
+    ca: &PathBuf,
+    extra_trust_roots: &[PathBuf],
+) -> Result<TlsAcceptor> {
+    let tls_config = build_tls_config(cert, key, ca, extra_trust_roots)?;
     Ok(TlsAcceptor::from(Arc::new(tls_config)))
 }
