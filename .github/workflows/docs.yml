@@ -3,13 +3,17 @@ on:
   push:
     branches:
       - main
+      - master
+  workflow_dispatch:
 permissions:
   contents: read
   pages: write
   id-token: write
 jobs:
   deploy:
-    if: startsWith(github.event.head_commit.message, 'docs:')
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.event.head_commit.message, 'docs:')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
