@@ -412,3 +412,575 @@ pub fn parse_authen_reply(_header: Header, body: &[u8]) -> Result<AuthenReply> {
         data,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_header(seq_no: u8) -> Header {
+        Header {
+            version: crate::VERSION,
+            packet_type: crate::TYPE_AUTHEN,
+            seq_no,
+            flags: 0,
+            session_id: 0x12345678,
+            length: 0,
+        }
+    }
+
+    // ==================== AuthenStart Builder Tests ====================
+
+    #[test]
+    fn authen_start_builder_creates_valid_header() {
+        let start = AuthenStart::builder(0xDEADBEEF, 0x01, 15, AUTHEN_TYPE_ASCII, 1);
+
+        assert_eq!(start.header.session_id, 0xDEADBEEF);
+        assert_eq!(start.header.seq_no, 1);
+        assert_eq!(start.header.packet_type, crate::TYPE_AUTHEN);
+        assert_eq!(start.action, 0x01);
+        assert_eq!(start.priv_lvl, 15);
+        assert_eq!(start.authen_type, AUTHEN_TYPE_ASCII);
+        assert_eq!(start.service, 1);
+    }
+
+    #[test]
+    fn authen_start_with_user() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string());
+
+        assert_eq!(start.user, "alice");
+        assert_eq!(start.user_raw, b"alice".to_vec());
+    }
+
+    #[test]
+    fn authen_start_with_port() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1)
+            .with_port(b"tty0".to_vec(), "tty0".to_string());
+
+        assert_eq!(start.port, "tty0");
+        assert_eq!(start.port_raw, b"tty0".to_vec());
+    }
+
+    #[test]
+    fn authen_start_with_rem_addr() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1)
+            .with_rem_addr(b"192.168.1.1".to_vec(), "192.168.1.1".to_string());
+
+        assert_eq!(start.rem_addr, "192.168.1.1");
+        assert_eq!(start.rem_addr_raw, b"192.168.1.1".to_vec());
+    }
+
+    #[test]
+    fn authen_start_with_data() {
+        let start =
+            AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_PAP, 1).with_data(b"password123".to_vec());
+
+        assert_eq!(start.data, b"password123".to_vec());
+    }
+
+    // ==================== AuthenContinue Builder Tests ====================
+
+    #[test]
+    fn authen_continue_builder_creates_valid_header() {
+        let cont = AuthenContinue::builder(0xCAFEBABE);
+
+        assert_eq!(cont.header.session_id, 0xCAFEBABE);
+        assert_eq!(cont.header.seq_no, 2);
+        assert_eq!(cont.header.packet_type, crate::TYPE_AUTHEN);
+        assert!(cont.user_msg.is_empty());
+        assert!(cont.data.is_empty());
+        assert_eq!(cont.flags, 0);
+    }
+
+    #[test]
+    fn authen_continue_with_seq() {
+        let cont = AuthenContinue::builder(123).with_seq(5);
+
+        assert_eq!(cont.header.seq_no, 5);
+    }
+
+    #[test]
+    fn authen_continue_with_user_msg() {
+        let cont = AuthenContinue::builder(123).with_user_msg(b"my_password".to_vec());
+
+        assert_eq!(cont.user_msg, b"my_password".to_vec());
+    }
+
+    #[test]
+    fn authen_continue_with_data() {
+        let cont = AuthenContinue::builder(123).with_data(b"extra_data".to_vec());
+
+        assert_eq!(cont.data, b"extra_data".to_vec());
+    }
+
+    #[test]
+    fn authen_continue_with_flags() {
+        let cont = AuthenContinue::builder(123).with_flags(AUTHEN_FLAG_NOECHO);
+
+        assert_eq!(cont.flags, AUTHEN_FLAG_NOECHO);
+    }
+
+    // ==================== AuthenReply Tests ====================
+
+    #[test]
+    fn authen_reply_server_msg_bytes_uses_raw_when_present() {
+        let reply = AuthenReply {
+            status: AUTHEN_STATUS_PASS,
+            flags: 0,
+            server_msg: "fallback".to_string(),
+            server_msg_raw: b"raw_message".to_vec(),
+            data: vec![],
+        };
+
+        assert_eq!(reply.server_msg_bytes().as_ref(), b"raw_message");
+    }
+
+    #[test]
+    fn authen_reply_server_msg_bytes_uses_string_when_raw_empty() {
+        let reply = AuthenReply {
+            status: AUTHEN_STATUS_PASS,
+            flags: 0,
+            server_msg: "message".to_string(),
+            server_msg_raw: vec![],
+            data: vec![],
+        };
+
+        assert_eq!(reply.server_msg_bytes().as_ref(), b"message");
+    }
+
+    // ==================== AuthenData Parsing Tests ====================
+
+    #[test]
+    fn parsed_data_pap_valid_utf8() {
+        let start =
+            AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_PAP, 1).with_data(b"mypassword".to_vec());
+
+        match start.parsed_data() {
+            AuthenData::Pap { password } => assert_eq!(password, "mypassword"),
+            _ => panic!("expected PAP data"),
+        }
+    }
+
+    #[test]
+    fn parsed_data_pap_invalid_utf8_becomes_raw() {
+        let start =
+            AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_PAP, 1).with_data(vec![0xFF, 0xFE, 0x00]);
+
+        match start.parsed_data() {
+            AuthenData::Raw(data) => assert_eq!(data, vec![0xFF, 0xFE, 0x00]),
+            _ => panic!("expected Raw data for invalid UTF-8"),
+        }
+    }
+
+    #[test]
+    fn parsed_data_chap_extracts_id_and_response() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_CHAP, 1)
+            .with_data(vec![0x42, 0x01, 0x02, 0x03]);
+
+        match start.parsed_data() {
+            AuthenData::Chap { chap_id, response } => {
+                assert_eq!(chap_id, 0x42);
+                assert_eq!(response, vec![0x01, 0x02, 0x03]);
+            }
+            _ => panic!("expected CHAP data"),
+        }
+    }
+
+    #[test]
+    fn parsed_data_chap_short_becomes_raw() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_CHAP, 1).with_data(vec![0x42]); // Only 1 byte, needs at least 2
+
+        match start.parsed_data() {
+            AuthenData::Raw(data) => assert_eq!(data, vec![0x42]),
+            _ => panic!("expected Raw data for short CHAP"),
+        }
+    }
+
+    #[test]
+    fn parsed_data_ascii_returns_raw() {
+        let start =
+            AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1).with_data(b"some data".to_vec());
+
+        match start.parsed_data() {
+            AuthenData::Raw(data) => assert_eq!(data, b"some data".to_vec()),
+            _ => panic!("expected Raw data for ASCII"),
+        }
+    }
+
+    // ==================== AuthSessionState Tests ====================
+
+    #[test]
+    fn auth_session_state_new_from_start_valid() {
+        let header = make_header(1); // odd seq
+
+        let state = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            "tty0".to_string(),
+            b"tty0".to_vec(),
+            "10.0.0.1".to_string(),
+            b"10.0.0.1".to_vec(),
+            1,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(state.last_seq, 1);
+        assert!(!state.expect_client);
+        assert_eq!(state.authen_type, Some(AUTHEN_TYPE_ASCII));
+        assert_eq!(state.username, Some("alice".to_string()));
+        assert_eq!(state.port, Some("tty0".to_string()));
+        assert_eq!(state.rem_addr, Some("10.0.0.1".to_string()));
+    }
+
+    #[test]
+    fn auth_session_state_new_from_start_rejects_even_seq() {
+        let header = make_header(2); // even seq - invalid for start
+
+        let result = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            String::new(),
+            vec![],
+            String::new(),
+            vec![],
+            1,
+            1,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd"));
+    }
+
+    #[test]
+    fn auth_session_state_empty_port_becomes_none() {
+        let header = make_header(1);
+
+        let state = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            String::new(),
+            vec![],
+            String::new(),
+            vec![],
+            1,
+            1,
+        )
+        .unwrap();
+
+        assert!(state.port.is_none());
+        assert!(state.rem_addr.is_none());
+    }
+
+    #[test]
+    fn auth_session_state_validate_client_valid() {
+        let header = make_header(1);
+        let mut state = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            String::new(),
+            vec![],
+            String::new(),
+            vec![],
+            1,
+            1,
+        )
+        .unwrap();
+
+        // Simulate server reply was sent
+        state.expect_client = true;
+        state.last_seq = 2;
+
+        let client_header = make_header(3); // odd, last_seq + 1
+        let result = state.validate_client(&client_header);
+
+        assert!(result.is_ok());
+        assert_eq!(state.last_seq, 3);
+        assert!(!state.expect_client);
+    }
+
+    #[test]
+    fn auth_session_state_validate_client_rejects_even_seq() {
+        let header = make_header(1);
+        let mut state = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            String::new(),
+            vec![],
+            String::new(),
+            vec![],
+            1,
+            1,
+        )
+        .unwrap();
+
+        state.expect_client = true;
+        state.last_seq = 2;
+
+        let client_header = make_header(4); // even seq - invalid
+        let result = state.validate_client(&client_header);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd"));
+    }
+
+    #[test]
+    fn auth_session_state_prepare_server_reply_valid() {
+        let header = make_header(1);
+        let mut state = AuthSessionState::new_from_start(
+            &header,
+            AUTHEN_TYPE_ASCII,
+            "alice".to_string(),
+            b"alice".to_vec(),
+            String::new(),
+            vec![],
+            String::new(),
+            vec![],
+            1,
+            1,
+        )
+        .unwrap();
+
+        let reply_header = make_header(2); // even, last_seq + 1
+        let result = state.prepare_server_reply(&reply_header);
+
+        assert!(result.is_ok());
+        assert_eq!(state.last_seq, 2);
+        assert!(state.expect_client);
+    }
+
+    // ==================== parse_authen_body Tests ====================
+
+    #[test]
+    fn parse_authen_body_start_valid() {
+        let header = make_header(1);
+        // Build a valid authentication START body
+        let mut body = vec![
+            0x01, // action = login
+            0x01, // priv_lvl = 1
+            0x01, // authen_type = ASCII
+            0x01, // service = 1
+            0x05, // user_len = 5
+            0x04, // port_len = 4
+            0x09, // rem_addr_len = 9
+            0x00, // data_len = 0
+        ];
+        body.extend_from_slice(b"alice"); // user
+        body.extend_from_slice(b"tty0"); // port
+        body.extend_from_slice(b"127.0.0.1"); // rem_addr
+
+        let packet = parse_authen_body(header, &body).unwrap();
+
+        match packet {
+            AuthenPacket::Start(start) => {
+                assert_eq!(start.action, 0x01);
+                assert_eq!(start.priv_lvl, 0x01);
+                assert_eq!(start.authen_type, AUTHEN_TYPE_ASCII);
+                assert_eq!(start.user, "alice");
+                assert_eq!(start.port, "tty0");
+                assert_eq!(start.rem_addr, "127.0.0.1");
+            }
+            _ => panic!("expected Start packet"),
+        }
+    }
+
+    #[test]
+    fn parse_authen_body_rejects_even_seq() {
+        let header = make_header(2); // even - invalid
+        let body = vec![0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00];
+
+        let result = parse_authen_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd"));
+    }
+
+    #[test]
+    fn parse_authen_body_rejects_invalid_action() {
+        let header = make_header(1);
+        let body = vec![
+            0x00, // action = 0 (invalid, must be 1 or 2)
+            0x01, 0x01, 0x01,
+        ];
+
+        let result = parse_authen_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("action"));
+    }
+
+    #[test]
+    fn parse_authen_body_rejects_invalid_priv_lvl() {
+        let header = make_header(1);
+        let body = vec![
+            0x01, // action
+            0x10, // priv_lvl = 16 (invalid, max is 15)
+            0x01, 0x01,
+        ];
+
+        let result = parse_authen_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn parse_authen_body_rejects_invalid_authen_type() {
+        let header = make_header(1);
+        let body = vec![
+            0x01, // action
+            0x01, // priv_lvl
+            0x00, // authen_type = 0 (invalid)
+            0x01,
+        ];
+
+        let result = parse_authen_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_type"));
+    }
+
+    // ==================== encode_authen_reply Tests ====================
+
+    #[test]
+    fn encode_authen_reply_roundtrip() {
+        let reply = AuthenReply {
+            status: AUTHEN_STATUS_PASS,
+            flags: 0,
+            server_msg: "Welcome!".to_string(),
+            server_msg_raw: vec![],
+            data: vec![0x01, 0x02],
+        };
+
+        let encoded = encode_authen_reply(&reply).unwrap();
+        let header = make_header(2);
+        let parsed = parse_authen_reply(header, &encoded).unwrap();
+
+        assert_eq!(parsed.status, AUTHEN_STATUS_PASS);
+        assert_eq!(parsed.flags, 0);
+        assert_eq!(parsed.server_msg, "Welcome!");
+        assert_eq!(parsed.data, vec![0x01, 0x02]);
+    }
+
+    #[test]
+    fn encode_authen_reply_uses_raw_when_present() {
+        let reply = AuthenReply {
+            status: AUTHEN_STATUS_GETPASS,
+            flags: AUTHEN_FLAG_NOECHO,
+            server_msg: "ignored".to_string(),
+            server_msg_raw: b"Password: ".to_vec(),
+            data: vec![],
+        };
+
+        let encoded = encode_authen_reply(&reply).unwrap();
+        let header = make_header(2);
+        let parsed = parse_authen_reply(header, &encoded).unwrap();
+
+        assert_eq!(parsed.server_msg, "Password: ");
+        assert_eq!(parsed.flags, AUTHEN_FLAG_NOECHO);
+    }
+
+    // ==================== parse_authen_reply Tests ====================
+
+    #[test]
+    fn parse_authen_reply_rejects_invalid_status() {
+        let header = make_header(2);
+        let body = vec![
+            0xFF, // invalid status
+            0x00, // flags
+            0x00, 0x00, // server_msg_len
+            0x00, 0x00, // data_len
+        ];
+
+        let result = parse_authen_reply(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status"));
+    }
+
+    #[test]
+    fn parse_authen_reply_rejects_invalid_flags() {
+        let header = make_header(2);
+        let body = vec![
+            AUTHEN_STATUS_PASS,
+            0xFF, // invalid flags
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_authen_reply(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("flags"));
+    }
+
+    #[test]
+    fn parse_authen_reply_rejects_truncated_body() {
+        let header = make_header(2);
+        let body = vec![
+            AUTHEN_STATUS_PASS,
+            0x00,
+            0x00,
+            0x10, // claims 16 byte message
+            0x00,
+            0x00, // but body ends here
+        ];
+
+        let result = parse_authen_reply(header, &body);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_authen_reply_handles_non_utf8_gracefully() {
+        let header = make_header(2);
+        let mut body = vec![
+            AUTHEN_STATUS_PASS,
+            0x00,
+            0x00,
+            0x03, // 3 byte message
+            0x00,
+            0x00,
+        ];
+        body.extend_from_slice(&[0xFF, 0xFE, 0xFD]); // invalid UTF-8
+
+        let parsed = parse_authen_reply(header, &body).unwrap();
+
+        // Should contain fallback message
+        assert!(parsed.server_msg.contains("non-utf8"));
+        assert_eq!(parsed.server_msg_raw, vec![0xFF, 0xFE, 0xFD]);
+    }
+
+    #[test]
+    fn parse_authen_reply_all_valid_statuses() {
+        let header = make_header(2);
+        let statuses = [
+            AUTHEN_STATUS_PASS,
+            AUTHEN_STATUS_FAIL,
+            AUTHEN_STATUS_GETDATA,
+            AUTHEN_STATUS_GETUSER,
+            AUTHEN_STATUS_GETPASS,
+            AUTHEN_STATUS_RESTART,
+            AUTHEN_STATUS_ERROR,
+            AUTHEN_STATUS_FOLLOW,
+        ];
+
+        for status in statuses {
+            let body = vec![status, 0x00, 0x00, 0x00, 0x00, 0x00];
+            let result = parse_authen_reply(header.clone(), &body);
+            assert!(result.is_ok(), "status 0x{:02x} should be valid", status);
+        }
+    }
+}

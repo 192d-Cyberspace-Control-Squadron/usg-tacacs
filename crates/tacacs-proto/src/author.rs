@@ -284,3 +284,460 @@ pub fn encode_author_response(response: &AuthorizationResponse) -> Result<Vec<u8
     }
     Ok(buf.to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_header() -> Header {
+        Header {
+            version: crate::VERSION,
+            packet_type: crate::TYPE_AUTHOR,
+            seq_no: 1,
+            flags: 0,
+            session_id: 0x12345678,
+            length: 0,
+        }
+    }
+
+    // ==================== AuthorizationRequest Builder Tests ====================
+
+    #[test]
+    fn author_request_builder_creates_valid_defaults() {
+        let req = AuthorizationRequest::builder(0xDEADBEEF);
+
+        assert_eq!(req.header.session_id, 0xDEADBEEF);
+        assert_eq!(req.header.seq_no, 1);
+        assert_eq!(req.header.packet_type, crate::TYPE_AUTHOR);
+        assert_eq!(req.authen_method, 1);
+        assert_eq!(req.priv_lvl, 1);
+        assert_eq!(req.authen_type, 1);
+        assert_eq!(req.authen_service, 1);
+        assert!(req.user.is_empty());
+        assert!(req.args.is_empty());
+    }
+
+    #[test]
+    fn author_request_with_user() {
+        let req = AuthorizationRequest::builder(123).with_user("alice".to_string());
+
+        assert_eq!(req.user, "alice");
+    }
+
+    #[test]
+    fn author_request_with_port() {
+        let req = AuthorizationRequest::builder(123).with_port("tty0".to_string());
+
+        assert_eq!(req.port, "tty0");
+    }
+
+    #[test]
+    fn author_request_with_rem_addr() {
+        let req = AuthorizationRequest::builder(123).with_rem_addr("10.0.0.1".to_string());
+
+        assert_eq!(req.rem_addr, "10.0.0.1");
+    }
+
+    #[test]
+    fn author_request_with_authen() {
+        let req = AuthorizationRequest::builder(123).with_authen(5, 2, 3, 15);
+
+        assert_eq!(req.authen_method, 5);
+        assert_eq!(req.authen_type, 2);
+        assert_eq!(req.authen_service, 3);
+        assert_eq!(req.priv_lvl, 15);
+    }
+
+    #[test]
+    fn author_request_add_arg() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=shell".to_string())
+            .add_arg("cmd=show".to_string());
+
+        assert_eq!(req.args.len(), 2);
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "cmd=show");
+    }
+
+    // ==================== Service/Protocol/Cmd Builder Tests ====================
+
+    #[test]
+    fn author_request_with_service_replaces_existing() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=ppp".to_string())
+            .with_service("shell");
+
+        assert_eq!(req.args.len(), 1);
+        assert_eq!(req.args[0], "service=shell");
+    }
+
+    #[test]
+    fn author_request_with_service_inserts_first() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("cmd=show".to_string())
+            .with_service("shell");
+
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "cmd=show");
+    }
+
+    #[test]
+    fn author_request_with_protocol_after_service() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "protocol=exec");
+    }
+
+    #[test]
+    fn author_request_with_protocol_replaces_existing() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .with_protocol("ssh");
+
+        assert_eq!(req.args.len(), 2);
+        assert_eq!(req.args[1], "protocol=ssh");
+    }
+
+    #[test]
+    fn author_request_with_cmd() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_cmd("show running-config");
+
+        assert!(req.args.iter().any(|a| a == "cmd=show running-config"));
+    }
+
+    #[test]
+    fn author_request_add_cmd_arg() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_cmd("show")
+            .add_cmd_arg("running-config")
+            .add_cmd_arg("full");
+
+        assert!(req.args.iter().any(|a| a == "cmd-arg=running-config"));
+        assert!(req.args.iter().any(|a| a == "cmd-arg=full"));
+    }
+
+    #[test]
+    fn author_request_as_shell() {
+        let req = AuthorizationRequest::builder(123).as_shell("exec");
+
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "protocol=exec");
+    }
+
+    // ==================== Query Methods Tests ====================
+
+    #[test]
+    fn author_request_command_string_with_cmd_and_args() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_cmd("show")
+            .add_cmd_arg("running-config")
+            .add_cmd_arg("full");
+
+        let cmd = req.command_string().unwrap();
+        assert_eq!(cmd, "show running-config full");
+    }
+
+    #[test]
+    fn author_request_command_string_cmd_only() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_cmd("reboot");
+
+        let cmd = req.command_string().unwrap();
+        assert_eq!(cmd, "reboot");
+    }
+
+    #[test]
+    fn author_request_command_string_fallback_to_args() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=login".to_string())
+            .add_arg("protocol=ip".to_string());
+
+        let cmd = req.command_string().unwrap();
+        assert_eq!(cmd, "service=login protocol=ip");
+    }
+
+    #[test]
+    fn author_request_is_shell_start_true() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+
+        assert!(req.is_shell_start());
+    }
+
+    #[test]
+    fn author_request_is_shell_start_false_with_cmd() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .with_cmd("show");
+
+        assert!(!req.is_shell_start());
+    }
+
+    #[test]
+    fn author_request_is_shell_start_false_non_shell() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_protocol("ip");
+
+        assert!(!req.is_shell_start());
+    }
+
+    #[test]
+    fn author_request_has_cmd_attrs() {
+        let req = AuthorizationRequest::builder(123).with_cmd("show");
+
+        assert!(req.has_cmd_attrs());
+    }
+
+    #[test]
+    fn author_request_has_service_attr() {
+        let req = AuthorizationRequest::builder(123).with_service("shell");
+
+        assert!(req.has_service_attr());
+    }
+
+    #[test]
+    fn author_request_attributes_parsing() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .add_arg("priv-lvl=15".to_string());
+
+        let attrs = req.attributes();
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs[0].name, "service");
+        assert_eq!(attrs[0].value, Some("shell".to_string()));
+        assert_eq!(attrs[1].name, "protocol");
+        assert_eq!(attrs[2].name, "priv-lvl");
+        assert_eq!(attrs[2].value, Some("15".to_string()));
+    }
+
+    // ==================== parse_author_body Tests ====================
+
+    #[test]
+    fn parse_author_body_valid() {
+        let header = make_header();
+        let mut body = vec![
+            0x01, // authen_method
+            0x01, // priv_lvl
+            0x01, // authen_type
+            0x01, // authen_service
+            0x05, // user_len = 5
+            0x04, // port_len = 4
+            0x09, // rem_addr_len = 9
+            0x02, // arg_cnt = 2
+        ];
+        body.extend_from_slice(b"alice"); // user
+        body.extend_from_slice(b"tty0"); // port
+        body.extend_from_slice(b"127.0.0.1"); // rem_addr
+        body.push(13); // arg[0] len = "service=shell"
+        body.push(13); // arg[1] len = "protocol=exec"
+        body.extend_from_slice(b"service=shell");
+        body.extend_from_slice(b"protocol=exec");
+
+        let req = parse_author_body(header, &body).unwrap();
+
+        assert_eq!(req.authen_method, 1);
+        assert_eq!(req.user, "alice");
+        assert_eq!(req.port, "tty0");
+        assert_eq!(req.rem_addr, "127.0.0.1");
+        assert_eq!(req.args.len(), 2);
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "protocol=exec");
+    }
+
+    #[test]
+    fn parse_author_body_rejects_short_body() {
+        let header = make_header();
+        let body = vec![0x01, 0x01, 0x01]; // only 3 bytes, needs 8
+
+        let result = parse_author_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn parse_author_body_rejects_invalid_authen_method() {
+        let header = make_header();
+        let body = vec![
+            0x00, // authen_method = 0 (invalid, must be 1-8)
+            0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let result = parse_author_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_method"));
+    }
+
+    #[test]
+    fn parse_author_body_rejects_invalid_authen_type() {
+        let header = make_header();
+        let body = vec![
+            0x01, // authen_method
+            0x01, // priv_lvl
+            0x05, // authen_type = 5 (invalid, max is 4)
+            0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let result = parse_author_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_type"));
+    }
+
+    #[test]
+    fn parse_author_body_rejects_invalid_priv_lvl() {
+        let header = make_header();
+        let body = vec![
+            0x01, // authen_method
+            0x10, // priv_lvl = 16 (invalid, max is 15)
+            0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let result = parse_author_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn parse_author_body_rejects_empty_arg() {
+        let header = make_header();
+        let mut body = vec![
+            0x01, 0x01, 0x01, 0x01, // authen fields
+            0x00, 0x00, 0x00, // user/port/rem_addr lens = 0
+            0x01, // arg_cnt = 1
+        ];
+        body.push(0); // arg[0] len = 0 (invalid)
+
+        let result = parse_author_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("arg length"));
+    }
+
+    // ==================== encode_author_response Tests ====================
+
+    #[test]
+    fn encode_author_response_pass_add() {
+        let response = AuthorizationResponse {
+            status: AUTHOR_STATUS_PASS_ADD,
+            server_msg: "Authorized".to_string(),
+            data: String::new(),
+            args: vec!["priv-lvl=15".to_string()],
+        };
+
+        let encoded = encode_author_response(&response).unwrap();
+
+        assert_eq!(encoded[0], AUTHOR_STATUS_PASS_ADD);
+        assert_eq!(encoded[1], 1); // arg count
+    }
+
+    #[test]
+    fn encode_author_response_pass_repl() {
+        let response = AuthorizationResponse {
+            status: AUTHOR_STATUS_PASS_REPL,
+            server_msg: String::new(),
+            data: String::new(),
+            args: vec!["priv-lvl=1".to_string()],
+        };
+
+        let result = encode_author_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_author_response_fail() {
+        let response = AuthorizationResponse {
+            status: AUTHOR_STATUS_FAIL,
+            server_msg: "Access denied".to_string(),
+            data: String::new(),
+            args: vec![],
+        };
+
+        let result = encode_author_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_author_response_error() {
+        let response = AuthorizationResponse {
+            status: AUTHOR_STATUS_ERROR,
+            server_msg: "Internal error".to_string(),
+            data: "debug info".to_string(),
+            args: vec![],
+        };
+
+        let result = encode_author_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_author_response_rejects_invalid_status() {
+        let response = AuthorizationResponse {
+            status: 0xFF,
+            server_msg: String::new(),
+            data: String::new(),
+            args: vec![],
+        };
+
+        let result = encode_author_response(&response);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status"));
+    }
+
+    #[test]
+    fn encode_author_response_with_multiple_args() {
+        let response = AuthorizationResponse {
+            status: AUTHOR_STATUS_PASS_ADD,
+            server_msg: "OK".to_string(),
+            data: String::new(),
+            args: vec![
+                "priv-lvl=15".to_string(),
+                "acl=admin".to_string(),
+                "addr=10.0.0.0/8".to_string(),
+            ],
+        };
+
+        let encoded = encode_author_response(&response).unwrap();
+
+        assert_eq!(encoded[1], 3); // 3 args
+    }
+
+    // ==================== Validation Edge Cases ====================
+
+    #[test]
+    fn author_request_case_insensitive_service() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("SERVICE=shell".to_string())
+            .with_service("login"); // Should replace SERVICE=shell
+
+        assert_eq!(req.args.len(), 1);
+        assert_eq!(req.args[0], "service=login");
+    }
+
+    #[test]
+    fn author_request_case_insensitive_protocol() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .add_arg("PROTOCOL=exec".to_string())
+            .with_protocol("ssh"); // Should replace PROTOCOL=exec
+
+        assert!(req.args.iter().any(|a| a == "protocol=ssh"));
+        assert!(!req.args.iter().any(|a| a == "PROTOCOL=exec"));
+    }
+}

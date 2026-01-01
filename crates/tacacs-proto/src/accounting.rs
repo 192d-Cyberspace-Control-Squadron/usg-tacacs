@@ -269,3 +269,532 @@ pub fn encode_accounting_response(response: &AccountingResponse) -> Result<Vec<u
     }
     Ok(buf.to_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_header() -> Header {
+        Header {
+            version: crate::VERSION,
+            packet_type: crate::TYPE_ACCT,
+            seq_no: 1,
+            flags: 0,
+            session_id: 0x12345678,
+            length: 0,
+        }
+    }
+
+    // ==================== AccountingRequest Builder Tests ====================
+
+    #[test]
+    fn accounting_request_builder_creates_valid_defaults() {
+        let req = AccountingRequest::builder(0xDEADBEEF, ACCT_FLAG_START);
+
+        assert_eq!(req.header.session_id, 0xDEADBEEF);
+        assert_eq!(req.header.seq_no, 1);
+        assert_eq!(req.header.packet_type, crate::TYPE_ACCT);
+        assert_eq!(req.flags, ACCT_FLAG_START);
+        assert_eq!(req.authen_method, 1);
+        assert_eq!(req.priv_lvl, 1);
+        assert!(req.user.is_empty());
+        assert!(req.args.is_empty());
+    }
+
+    #[test]
+    fn accounting_request_with_user() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_user("alice".to_string());
+
+        assert_eq!(req.user, "alice");
+    }
+
+    #[test]
+    fn accounting_request_with_port() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_port("tty0".to_string());
+
+        assert_eq!(req.port, "tty0");
+    }
+
+    #[test]
+    fn accounting_request_with_rem_addr() {
+        let req =
+            AccountingRequest::builder(123, ACCT_FLAG_START).with_rem_addr("10.0.0.1".to_string());
+
+        assert_eq!(req.rem_addr, "10.0.0.1");
+    }
+
+    #[test]
+    fn accounting_request_with_authen() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_authen(5, 2, 3, 15);
+
+        assert_eq!(req.authen_method, 5);
+        assert_eq!(req.authen_type, 2);
+        assert_eq!(req.authen_service, 3);
+        assert_eq!(req.priv_lvl, 15);
+    }
+
+    #[test]
+    fn accounting_request_add_arg() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .add_arg("service=shell".to_string())
+            .add_arg("task_id=123".to_string());
+
+        assert_eq!(req.args.len(), 2);
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "task_id=123");
+    }
+
+    // ==================== Service/Protocol/Cmd Builder Tests ====================
+
+    #[test]
+    fn accounting_request_with_service() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_service("shell");
+
+        assert_eq!(req.args[0], "service=shell");
+    }
+
+    #[test]
+    fn accounting_request_with_service_replaces_existing() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .add_arg("service=ppp".to_string())
+            .with_service("shell");
+
+        assert_eq!(req.args.len(), 1);
+        assert_eq!(req.args[0], "service=shell");
+    }
+
+    #[test]
+    fn accounting_request_with_protocol() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .with_protocol("exec");
+
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "protocol=exec");
+    }
+
+    #[test]
+    fn accounting_request_with_cmd() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("login")
+            .with_cmd("show running-config");
+
+        assert!(req.args.iter().any(|a| a == "cmd=show running-config"));
+    }
+
+    #[test]
+    fn accounting_request_add_cmd_arg() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("login")
+            .with_cmd("show")
+            .add_cmd_arg("running-config");
+
+        assert!(req.args.iter().any(|a| a == "cmd-arg=running-config"));
+    }
+
+    #[test]
+    fn accounting_request_with_task_id() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_task_id("42");
+
+        assert!(req.args.iter().any(|a| a == "task_id=42"));
+    }
+
+    #[test]
+    fn accounting_request_with_status() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP).with_status("0");
+
+        assert!(req.args.iter().any(|a| a == "status=0"));
+    }
+
+    #[test]
+    fn accounting_request_with_bytes() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP).with_bytes("1024", "2048");
+
+        assert!(req.args.iter().any(|a| a == "bytes_in=1024"));
+        assert!(req.args.iter().any(|a| a == "bytes_out=2048"));
+    }
+
+    #[test]
+    fn accounting_request_attributes_parsing() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .with_task_id("42")
+            .add_arg("elapsed_time=100".to_string());
+
+        let attrs = req.attributes();
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs[0].name, "service");
+        assert_eq!(attrs[0].value, Some("shell".to_string()));
+        assert_eq!(attrs[1].name, "task_id");
+        assert_eq!(attrs[1].value, Some("42".to_string()));
+    }
+
+    // ==================== parse_accounting_body Tests ====================
+
+    #[test]
+    fn parse_accounting_body_start_valid() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_START, // flags
+            0x01,            // authen_method
+            0x01,            // priv_lvl
+            0x01,            // authen_type
+            0x01,            // authen_service
+            0x05,            // user_len = 5
+            0x04,            // port_len = 4
+            0x09,            // rem_addr_len = 9
+            0x02,            // arg_cnt = 2
+        ];
+        body.extend_from_slice(b"alice"); // user
+        body.extend_from_slice(b"tty0"); // port
+        body.extend_from_slice(b"127.0.0.1"); // rem_addr
+        body.push(13); // arg[0] len = "service=shell"
+        body.push(10); // arg[1] len = "task_id=42"
+        body.extend_from_slice(b"service=shell");
+        body.extend_from_slice(b"task_id=42");
+
+        let req = parse_accounting_body(header, &body).unwrap();
+
+        assert_eq!(req.flags, ACCT_FLAG_START);
+        assert_eq!(req.authen_method, 1);
+        assert_eq!(req.user, "alice");
+        assert_eq!(req.port, "tty0");
+        assert_eq!(req.rem_addr, "127.0.0.1");
+        assert_eq!(req.args.len(), 2);
+        assert_eq!(req.args[0], "service=shell");
+        assert_eq!(req.args[1], "task_id=42");
+    }
+
+    #[test]
+    fn parse_accounting_body_stop_valid() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_STOP, // flags
+            0x01,           // authen_method
+            0x01,           // priv_lvl
+            0x01,           // authen_type
+            0x01,           // authen_service
+            0x05,           // user_len = 5
+            0x00,           // port_len = 0
+            0x00,           // rem_addr_len = 0
+            0x01,           // arg_cnt = 1
+        ];
+        body.extend_from_slice(b"alice"); // user
+        body.push(13); // arg[0] len
+        body.extend_from_slice(b"service=shell");
+
+        let req = parse_accounting_body(header, &body).unwrap();
+
+        assert_eq!(req.flags, ACCT_FLAG_STOP);
+    }
+
+    #[test]
+    fn parse_accounting_body_watchdog_valid() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_WATCHDOG, // flags
+            0x01,               // authen_method
+            0x01,               // priv_lvl
+            0x01,               // authen_type
+            0x01,               // authen_service
+            0x05,               // user_len = 5
+            0x00,               // port_len = 0
+            0x00,               // rem_addr_len = 0
+            0x01,               // arg_cnt = 1
+        ];
+        body.extend_from_slice(b"alice"); // user
+        body.push(13); // arg[0] len
+        body.extend_from_slice(b"service=shell");
+
+        let req = parse_accounting_body(header, &body).unwrap();
+
+        assert_eq!(req.flags, ACCT_FLAG_WATCHDOG);
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_short_body() {
+        let header = make_header();
+        let body = vec![0x02, 0x01, 0x01]; // only 3 bytes, needs 9
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_invalid_flags() {
+        let header = make_header();
+        let body = vec![
+            0x00, // flags = 0 (invalid, must have exactly one of START/STOP/WATCHDOG)
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("flags"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_multiple_flags() {
+        let header = make_header();
+        let body = vec![
+            ACCT_FLAG_START | ACCT_FLAG_STOP, // both START and STOP (invalid)
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("flags"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_invalid_authen_method() {
+        let header = make_header();
+        let body = vec![
+            ACCT_FLAG_START,
+            0x00, // authen_method = 0 (invalid, must be 1-8)
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_method"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_invalid_authen_type() {
+        let header = make_header();
+        let body = vec![
+            ACCT_FLAG_START,
+            0x01, // authen_method
+            0x01, // priv_lvl
+            0x05, // authen_type = 5 (invalid, max is 4)
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_type"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_invalid_priv_lvl() {
+        let header = make_header();
+        let body = vec![
+            ACCT_FLAG_START,
+            0x01, // authen_method
+            0x10, // priv_lvl = 16 (invalid, max is 15)
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn parse_accounting_body_rejects_empty_arg() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_START,
+            0x01,
+            0x01,
+            0x01,
+            0x01, // authen fields
+            0x00,
+            0x00,
+            0x00, // user/port/rem_addr lens = 0
+            0x01, // arg_cnt = 1
+        ];
+        body.push(0); // arg[0] len = 0 (invalid)
+
+        let result = parse_accounting_body(header, &body);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("arg length"));
+    }
+
+    // ==================== encode_accounting_response Tests ====================
+
+    #[test]
+    fn encode_accounting_response_success() {
+        let response = AccountingResponse {
+            status: ACCT_STATUS_SUCCESS,
+            server_msg: "Recorded".to_string(),
+            data: String::new(),
+            args: vec![],
+        };
+
+        let encoded = encode_accounting_response(&response).unwrap();
+
+        assert_eq!(encoded[0], ACCT_STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn encode_accounting_response_error() {
+        let response = AccountingResponse {
+            status: ACCT_STATUS_ERROR,
+            server_msg: "Database error".to_string(),
+            data: "debug info".to_string(),
+            args: vec![],
+        };
+
+        let result = encode_accounting_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_accounting_response_follow() {
+        let response = AccountingResponse {
+            status: ACCT_STATUS_FOLLOW,
+            server_msg: String::new(),
+            data: String::new(),
+            args: vec![],
+        };
+
+        let result = encode_accounting_response(&response);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn encode_accounting_response_rejects_invalid_status() {
+        let response = AccountingResponse {
+            status: 0xFF,
+            server_msg: String::new(),
+            data: String::new(),
+            args: vec![],
+        };
+
+        let result = encode_accounting_response(&response);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status"));
+    }
+
+    #[test]
+    fn encode_accounting_response_with_args() {
+        let response = AccountingResponse {
+            status: ACCT_STATUS_SUCCESS,
+            server_msg: String::new(),
+            data: String::new(),
+            args: vec!["result=ok".to_string()],
+        };
+
+        let encoded = encode_accounting_response(&response).unwrap();
+
+        // status(1) + server_msg_len(2) + data_len(2) + arg_cnt(1) + arg_lens(1) + args(9)
+        assert_eq!(encoded[5], 1); // arg count
+    }
+
+    // ==================== Flag Combination Tests ====================
+
+    #[test]
+    fn accounting_flags_start_only() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_START, // only START
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+        ];
+        body.push(13);
+        body.extend_from_slice(b"service=shell");
+
+        let result = parse_accounting_body(header, &body);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accounting_flags_stop_only() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_STOP, // only STOP
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+        ];
+        body.push(13);
+        body.extend_from_slice(b"service=shell");
+
+        let result = parse_accounting_body(header, &body);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accounting_flags_watchdog_only() {
+        let header = make_header();
+        let mut body = vec![
+            ACCT_FLAG_WATCHDOG, // only WATCHDOG
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+        ];
+        body.push(13);
+        body.extend_from_slice(b"service=shell");
+
+        let result = parse_accounting_body(header, &body);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn accounting_rejects_extraneous_flags() {
+        let header = make_header();
+        let body = vec![
+            ACCT_FLAG_START | 0x80, // START + unknown high bit
+            0x01,
+            0x01,
+            0x01,
+            0x01,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ];
+
+        let result = parse_accounting_body(header, &body);
+        assert!(result.is_err());
+    }
+}
