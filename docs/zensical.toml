@@ -59,3 +59,76 @@ permalink = true
 
 [project.markdown_extensions.pymdownx.tabbed]
 alternate_style = true
+
+[[project.nav]]
+title = "Home"
+path = "index.md"
+
+[[project.nav]]
+title = "Admin Guide"
+
+[[project.nav.children]]
+title = "Overview"
+path = "admin/index.md"
+
+[[project.nav.children]]
+title = "Security Hardening"
+path = "admin/security.md"
+
+[[project.nav.children]]
+title = "Configuration"
+path = "config.md"
+
+[[project.nav.children]]
+title = "TLS Setup"
+path = "tls.md"
+
+[[project.nav.children]]
+title = "Operations"
+path = "operations.md"
+
+[[project.nav.children]]
+title = "Container Deployment"
+path = "container.md"
+
+[[project.nav]]
+title = "User Guide"
+
+[[project.nav.children]]
+title = "Overview"
+path = "user/index.md"
+
+[[project.nav.children]]
+title = "Device Configuration"
+path = "user/device-config.md"
+
+[[project.nav.children]]
+title = "Authentication"
+path = "authentication.md"
+
+[[project.nav.children]]
+title = "Policy"
+path = "policy.md"
+
+[[project.nav]]
+title = "Developer Guide"
+
+[[project.nav.children]]
+title = "Overview"
+path = "dev/index.md"
+
+[[project.nav.children]]
+title = "Development Setup"
+path = "dev_setup.md"
+
+[[project.nav.children]]
+title = "Protocol Implementation"
+path = "dev/protocol.md"
+
+[[project.nav.children]]
+title = "Policy Ingest Service"
+path = "policy-ingest.md"
+
+[[project.nav]]
+title = "RFC Compliance"
+path = "rfc/index.md"
