@@ -1,5 +1,7 @@
 use crate::auth::LdapConfig;
-use crate::config::{Args, StaticCreds, credentials_map};
+use crate::config::{Args, LogFormat, StaticCreds, credentials_map};
+use crate::http::{ServerState, serve_http};
+use crate::metrics::metrics;
 use crate::server::{
     ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
 };
@@ -15,11 +17,26 @@ use usg_tacacs_proto::MIN_SECRET_LEN;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let subscriber = tracing_subscriber::fmt()
-        .with_timer(UtcTime::rfc_3339())
-        .finish();
-    tracing::subscriber::set_global_default(subscriber)?;
     let args = Args::parse();
+
+    // Initialize tracing with the configured log format
+    match args.log_format {
+        LogFormat::Text => {
+            let subscriber = tracing_subscriber::fmt()
+                .with_timer(UtcTime::rfc_3339())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)?;
+        }
+        LogFormat::Json => {
+            let subscriber = tracing_subscriber::fmt()
+                .with_timer(UtcTime::rfc_3339())
+                .json()
+                .flatten_event(true)
+                .with_current_span(true)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)?;
+        }
+    }
 
     if let Some(policy_path) = args.check_policy.as_ref() {
         let schema = args
@@ -236,6 +253,29 @@ async fn main() -> Result<()> {
         bail!("no listeners configured; set --listen-tls and/or --listen-legacy");
     }
 
+    // Create HTTP server state for health checks
+    let server_state = ServerState::new();
+
+    // Start HTTP server for health checks and metrics if configured
+    if let Some(addr) = args.listen_http {
+        let state = server_state.clone();
+        handles.push(tokio::spawn(async move {
+            if let Err(err) = serve_http(addr, state).await {
+                error!(error = %err, "HTTP server stopped");
+            }
+        }));
+    }
+
+    // Initialize policy rules count metric
+    {
+        let policy = shared_policy.read().await;
+        metrics().policy_rules_count.set(policy.rule_count() as f64);
+    }
+
+    // Mark server as ready now that all listeners are started
+    server_state.set_ready(true);
+    info!("server ready");
+
     let policy = shared_policy.clone();
     let schema_path = args.schema.clone();
     let policy_path = policy_path.clone();
@@ -253,6 +293,8 @@ async fn main() -> Result<()> {
 mod ascii;
 mod auth;
 mod config;
+mod http;
+mod metrics;
 mod policy;
 mod server;
 mod session;

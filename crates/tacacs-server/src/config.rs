@@ -1,8 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+
+/// Log output format.
+#[derive(Debug, Clone, Copy, Default, ValueEnum)]
+pub enum LogFormat {
+    /// Human-readable text format (default).
+    #[default]
+    Text,
+    /// JSON structured logging for log aggregation (ELK, Loki).
+    Json,
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "usg-tacacs", version, about = "Rust TACACS+ server")]
@@ -26,6 +36,18 @@ pub struct Args {
     /// Listen address for legacy plaintext TACACS+.
     #[arg(long)]
     pub listen_legacy: Option<SocketAddr>,
+
+    /// Listen address for HTTP health checks and Prometheus metrics (e.g., 127.0.0.1:8080).
+    #[arg(long)]
+    pub listen_http: Option<SocketAddr>,
+
+    /// Log output format: text or json.
+    #[arg(long, value_enum, default_value_t = LogFormat::Text)]
+    pub log_format: LogFormat,
+
+    /// Location identifier for metrics labels (e.g., NYC01, LAX01).
+    #[arg(long)]
+    pub location: Option<String>,
 
     /// Server certificate (PEM).
     #[arg(long)]
@@ -160,7 +182,7 @@ pub struct Args {
     pub legacy_nad_secret: Vec<(IpAddr, String)>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct StaticCreds {
     pub plain: HashMap<String, String>,
     pub argon: HashMap<String, String>,
@@ -270,4 +292,559 @@ fn parse_nad_secret(s: &str) -> std::result::Result<(IpAddr, String), String> {
         return Err("secret cannot be empty".into());
     }
     Ok((ip, secret))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    // ==================== parse_user_password Tests ====================
+
+    #[test]
+    fn parse_user_password_valid() {
+        let result = parse_user_password("admin:secret123");
+        assert!(result.is_ok());
+        let (user, pass) = result.unwrap();
+        assert_eq!(user, "admin");
+        assert_eq!(pass, "secret123");
+    }
+
+    #[test]
+    fn parse_user_password_with_colon_in_password() {
+        let result = parse_user_password("admin:secret:with:colons");
+        assert!(result.is_ok());
+        let (user, pass) = result.unwrap();
+        assert_eq!(user, "admin");
+        assert_eq!(pass, "secret:with:colons");
+    }
+
+    #[test]
+    fn parse_user_password_empty_password() {
+        let result = parse_user_password("admin:");
+        assert!(result.is_ok());
+        let (user, pass) = result.unwrap();
+        assert_eq!(user, "admin");
+        assert_eq!(pass, "");
+    }
+
+    #[test]
+    fn parse_user_password_empty_user() {
+        let result = parse_user_password(":password");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn parse_user_password_missing_password() {
+        let result = parse_user_password("admin");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing password"));
+    }
+
+    #[test]
+    fn parse_user_password_special_characters() {
+        let result = parse_user_password("user@domain.com:P@$$w0rd!#");
+        assert!(result.is_ok());
+        let (user, pass) = result.unwrap();
+        assert_eq!(user, "user@domain.com");
+        assert_eq!(pass, "P@$$w0rd!#");
+    }
+
+    // ==================== parse_nad_secret Tests ====================
+
+    #[test]
+    fn parse_nad_secret_ipv4() {
+        let result = parse_nad_secret("192.168.1.1:mysecret");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(ip, "192.168.1.1".parse::<IpAddr>().unwrap());
+        assert_eq!(secret, "mysecret");
+    }
+
+    #[test]
+    fn parse_nad_secret_ipv6() {
+        // IPv6 addresses contain colons, so the parser uses splitn(2, ':')
+        // which means the first colon splits IP from secret.
+        // For IPv6, you need to use bracket notation or a full address.
+        // Testing with a full IPv6 address that works with the simple parser:
+        let result = parse_nad_secret("2001:db8:85a3:8d3:1319:8a2e:370:7348:mysecret");
+        // This will fail because the parser splits on first colon
+        // The current parser doesn't support IPv6 well, so we test what it does:
+        assert!(result.is_err()); // First segment "2001" is not a valid IP
+    }
+
+    #[test]
+    fn parse_nad_secret_with_colon_in_secret() {
+        let result = parse_nad_secret("10.0.0.1:secret:with:colons");
+        assert!(result.is_ok());
+        let (ip, secret) = result.unwrap();
+        assert_eq!(ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(secret, "secret:with:colons");
+    }
+
+    #[test]
+    fn parse_nad_secret_empty_secret() {
+        let result = parse_nad_secret("192.168.1.1:");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("empty"));
+    }
+
+    #[test]
+    fn parse_nad_secret_invalid_ip() {
+        let result = parse_nad_secret("invalid:secret");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("invalid IP"));
+    }
+
+    #[test]
+    fn parse_nad_secret_missing_secret() {
+        let result = parse_nad_secret("192.168.1.1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("missing secret"));
+    }
+
+    // ==================== load_user_pass_file Tests ====================
+
+    #[test]
+    fn load_user_pass_file_valid() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "admin:password123").unwrap();
+        writeln!(file, "user:secret456").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_ok());
+        assert_eq!(target.len(), 2);
+        assert_eq!(target.get("admin"), Some(&"password123".to_string()));
+        assert_eq!(target.get("user"), Some(&"secret456".to_string()));
+    }
+
+    #[test]
+    fn load_user_pass_file_empty_lines_skipped() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "admin:password123").unwrap();
+        writeln!(file, "").unwrap();
+        writeln!(file, "   ").unwrap();
+        writeln!(file, "user:secret456").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_ok());
+        assert_eq!(target.len(), 2);
+    }
+
+    #[test]
+    fn load_user_pass_file_duplicate_overwrites() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "admin:password1").unwrap();
+        writeln!(file, "admin:password2").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_ok());
+        assert_eq!(target.len(), 1);
+        assert_eq!(target.get("admin"), Some(&"password2".to_string()));
+    }
+
+    #[test]
+    fn load_user_pass_file_missing_password() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "admin").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing password"));
+    }
+
+    #[test]
+    fn load_user_pass_file_empty_user() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, ":password").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn load_user_pass_file_with_whitespace_trimming() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "  admin:password  ").unwrap();
+
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&file.path().to_path_buf(), &mut target);
+
+        assert!(result.is_ok());
+        assert_eq!(target.get("admin"), Some(&"password".to_string()));
+    }
+
+    #[test]
+    fn load_user_pass_file_nonexistent() {
+        let mut target = HashMap::new();
+        let result = load_user_pass_file(&PathBuf::from("/nonexistent/file"), &mut target);
+
+        assert!(result.is_err());
+    }
+
+    // ==================== credentials_map Tests ====================
+
+    #[test]
+    fn credentials_map_empty_allowed() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: true,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert!(creds.plain.is_empty());
+        assert!(creds.argon.is_empty());
+    }
+
+    #[test]
+    fn credentials_map_inline_passwords() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: vec![
+                ("admin".into(), "secret1".into()),
+                ("user".into(), "secret2".into()),
+            ],
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: true,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert_eq!(creds.plain.len(), 2);
+        assert_eq!(creds.plain.get("admin"), Some(&"secret1".to_string()));
+        assert_eq!(creds.plain.get("user"), Some(&"secret2".to_string()));
+    }
+
+    #[test]
+    fn credentials_map_disabled_without_flag() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: vec![("admin".into(), "secret".into())],
+            user_password_file: None,
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: false, // Disabled
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("disabled"));
+    }
+
+    #[test]
+    fn credentials_map_both_inline_and_file_fails() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "user:pass").unwrap();
+
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: vec![("admin".into(), "secret".into())],
+            user_password_file: Some(file.path().to_path_buf()),
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: true,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not both"));
+    }
+
+    #[test]
+    fn credentials_map_from_file() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "admin:filepass").unwrap();
+        writeln!(file, "operator:operpass").unwrap();
+
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: Some(file.path().to_path_buf()),
+            user_password_hash: Vec::new(),
+            user_password_hash_file: None,
+            allow_static_credentials: true,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert_eq!(creds.plain.len(), 2);
+        assert_eq!(creds.plain.get("admin"), Some(&"filepass".to_string()));
+        assert_eq!(creds.plain.get("operator"), Some(&"operpass".to_string()));
+    }
+
+    #[test]
+    fn credentials_map_argon_inline() {
+        let args = Args {
+            check_policy: None,
+            schema: None,
+            policy: None,
+            listen_tls: None,
+            listen_legacy: None,
+            listen_http: None,
+            log_format: LogFormat::Text,
+            location: None,
+            tls_cert: None,
+            tls_key: None,
+            client_ca: None,
+            tls_trust_root: Vec::new(),
+            secret: None,
+            forbid_unencrypted: false,
+            tls_psk: None,
+            user_password: Vec::new(),
+            user_password_file: None,
+            user_password_hash: vec![("admin".into(), "$argon2id$v=19$m=65536...".into())],
+            user_password_hash_file: None,
+            allow_static_credentials: true,
+            ascii_attempt_limit: 5,
+            ascii_user_attempt_limit: 3,
+            ascii_pass_attempt_limit: 5,
+            ascii_backoff_ms: 0,
+            ascii_backoff_max_ms: 5000,
+            ascii_lockout_limit: 0,
+            single_connect_idle_secs: 300,
+            single_connect_keepalive_secs: 120,
+            max_connections_per_ip: 50,
+            tls_allowed_client_cn: Vec::new(),
+            tls_allowed_client_san: Vec::new(),
+            ldaps_url: None,
+            ldap_bind_dn: None,
+            ldap_bind_password: None,
+            ldap_search_base: None,
+            ldap_username_attr: "uid".into(),
+            ldap_timeout_ms: 5000,
+            ldap_ca_file: None,
+            ldap_required_group: Vec::new(),
+            ldap_group_attr: "memberOf".into(),
+            legacy_nad_secret: Vec::new(),
+        };
+
+        let result = credentials_map(&args);
+        assert!(result.is_ok());
+        let creds = result.unwrap();
+        assert_eq!(creds.argon.len(), 1);
+        assert!(creds.argon.contains_key("admin"));
+    }
+
+    // ==================== StaticCreds Tests ====================
+
+    #[test]
+    fn static_creds_default() {
+        let creds = StaticCreds::default();
+        assert!(creds.plain.is_empty());
+        assert!(creds.argon.is_empty());
+    }
+
+    #[test]
+    fn static_creds_clone() {
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("user".into(), "pass".into());
+        creds.argon.insert("admin".into(), "$argon2id$...".into());
+
+        let cloned = creds.clone();
+        assert_eq!(cloned.plain.get("user"), Some(&"pass".to_string()));
+        assert_eq!(
+            cloned.argon.get("admin"),
+            Some(&"$argon2id$...".to_string())
+        );
+    }
 }

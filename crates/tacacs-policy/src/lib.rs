@@ -256,6 +256,11 @@ impl PolicyEngine {
         self.shell_start.get(&user.to_lowercase()).cloned()
     }
 
+    /// Returns the number of authorization rules in the policy.
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
     pub fn prompt_username(
         &self,
         user: Option<&str>,
@@ -440,9 +445,9 @@ fn validate_against_schema(value: &Value, schema_path: &Path) -> Result<()> {
         .build(&schema_json)
         .map_err(|err| anyhow!("compiling schema {}: {err}", schema_path.display()))?;
 
-    compiled.validate(value).map_err(|err| {
-        anyhow!("policy failed schema validation: {}", err)
-    })
+    compiled
+        .validate(value)
+        .map_err(|err| anyhow!("policy failed schema validation: {}", err))
 }
 
 #[cfg(test)]
