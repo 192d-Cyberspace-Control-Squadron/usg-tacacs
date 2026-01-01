@@ -22,3 +22,4 @@ ldap3 = { version = "0.11", default-features = false, features = [
     "tls-native",
     "sync",
 ] }
+argon2 = "0.5"

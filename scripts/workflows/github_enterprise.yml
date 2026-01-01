@@ -1,0 +1,47 @@
+name: publish-policy-bundle
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: self-hosted # strongly recommended for mTLS keys
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate JSON vs schemas
+        run: |
+          python -m pip install jsonschema
+          python - <<'PY'
+          import json, glob
+          from jsonschema import validate
+          cfg_schema = json.load(open("config/config.schema.json"))
+          pol_schema = json.load(open("policy/policy.schema.json"))
+          for p in glob.glob("policy/locations/*.json"):
+            validate(json.load(open(p)), pol_schema)
+          for c in glob.glob("config/locations/*.json"):
+            validate(json.load(open(c)), cfg_schema)
+          PY
+
+      - name: Build bundle
+        run: tar -czf bundle.tgz policy/ config/ manifests/
+
+      - name: Publish to ingest via mTLS
+        env:
+          INGEST_URL: https://ingest.example.mil/api/v1/ingest
+          CLIENT_CERT: /etc/tacacs-ci/client.crt
+          CLIENT_KEY: /etc/tacacs-ci/client.key
+          CA_CERT: /etc/tacacs-ci/ingest-ca.crt
+        run: |
+          curl -fS "$INGEST_URL" \
+            --cert "$CLIENT_CERT" \
+            --key "$CLIENT_KEY" \
+            --cacert "$CA_CERT" \
+            -H "Content-Type: application/gzip" \
+            -H "X-Repo-Id: $GITHUB_REPOSITORY" \
+            -H "X-Commit-SHA: $GITHUB_SHA" \
+            -H "X-Ref: $GITHUB_REF_NAME" \
+            --data-binary @bundle.tgz

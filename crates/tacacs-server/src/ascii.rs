@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
 use openssl::rand::rand_bytes;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -46,14 +45,14 @@ pub fn username_for_policy<'a>(
     if let Some(u) = decoded {
         return Some(u.to_string());
     }
-    raw.map(|bytes| hex::encode(bytes))
+    raw.map(hex::encode)
 }
 
 pub fn field_for_policy<'a>(decoded: Option<&'a str>, raw: Option<&'a Vec<u8>>) -> Option<String> {
     if let Some(v) = decoded {
         return Some(v.to_string());
     }
-    raw.map(|bytes| hex::encode(bytes))
+    raw.map(hex::encode)
 }
 
 fn build_ascii_prompts(
@@ -105,7 +104,7 @@ pub async fn handle_ascii_continue(
     cont_flags: u8,
     state: &mut AuthSessionState,
     policy: &Arc<RwLock<PolicyEngine>>,
-    credentials: &HashMap<String, String>,
+    credentials: &crate::config::StaticCreds,
     config: &AsciiConfig,
     ldap: Option<&Arc<LdapConfig>>,
 ) -> AuthenReply {
@@ -248,21 +247,20 @@ pub async fn handle_ascii_continue(
                 let user = state.username.clone().unwrap_or_default();
                 verify_pap_bytes(&user, cont_data, credentials)
             };
-            if !ok {
-                if let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap) {
-                    if let Ok(pwd) = std::str::from_utf8(cont_data) {
-                        ok = ldap_cfg.authenticate(user, pwd).await;
-                    }
-                }
+            if !ok
+                && let (Some(user), Some(ldap_cfg)) = (state.username.as_deref(), ldap)
+                && let Ok(pwd) = std::str::from_utf8(cont_data)
+            {
+                ok = ldap_cfg.authenticate(user, pwd).await;
             }
-            if !ok {
-                if let Some(delay) = calc_ascii_backoff_capped(
+            if !ok
+                && let Some(delay) = calc_ascii_backoff_capped(
                     config.backoff_ms,
                     state.ascii_attempts,
                     config.backoff_max_ms,
-                ) {
-                    sleep(delay).await;
-                }
+                )
+            {
+                sleep(delay).await;
             }
             let svc_str = state
                 .service

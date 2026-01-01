@@ -68,6 +68,16 @@
       },
       "default": []
     },
+    "user_password_file": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "allow_static_credentials": {
+      "type": "boolean",
+      "default": false
+    },
     "ascii_attempt_limit": {
       "type": "integer",
       "minimum": 0,

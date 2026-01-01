@@ -1,0 +1,41 @@
+stages: [validate, bundle, publish]
+
+validate:
+  image: python:3.14
+  stage: validate
+  script:
+    - pip install jsonschema
+    - python - <<'PY'
+      import json, glob
+      from jsonschema import validate
+      cfg_schema = json.load(open("config/config.schema.json"))
+      pol_schema = json.load(open("policy/policy.schema.json"))
+      for p in glob.glob("policy/locations/*.json"):
+        validate(json.load(open(p)), pol_schema)
+      for c in glob.glob("config/locations/*.json"):
+        validate(json.load(open(c)), cfg_schema)
+      PY
+
+bundle:
+  stage: bundle
+  image: alpine:3.20
+  script:
+    - tar -czf bundle.tgz policy/ config/ manifests/
+  artifacts:
+    paths: [bundle.tgz]
+
+publish:
+  stage: publish
+  image: curlimages/curl:8.5.0
+  dependencies: [bundle]
+  script:
+    - |
+      curl -fS "https://ingest.example.mil/api/v1/ingest" \
+        --cert "$CI_CLIENT_CERT" \
+        --key "$CI_CLIENT_KEY" \
+        --cacert "$INGEST_CA_CERT" \
+        -H "Content-Type: application/gzip" \
+        -H "X-Repo-Id: $CI_PROJECT_PATH" \
+        -H "X-Commit-SHA: $CI_COMMIT_SHA" \
+        -H "X-Ref: $CI_COMMIT_REF_NAME" \
+        --data-binary @bundle.tgz

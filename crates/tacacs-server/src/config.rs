@@ -59,6 +59,22 @@ pub struct Args {
     #[arg(long, value_parser = parse_user_password, value_name = "USER:PASS")]
     pub user_password: Vec<(String, String)>,
 
+    /// Optional file containing user:password entries (one per line). Disabled unless --allow-static-credentials.
+    #[arg(long)]
+    pub user_password_file: Option<PathBuf>,
+
+    /// Optional hashed user:argon2 entries (user:$argon2id$v=... format).
+    #[arg(long, value_parser = parse_user_password, value_name = "USER:ARGON2")]
+    pub user_password_hash: Vec<(String, String)>,
+
+    /// Optional file containing user:argon2 entries (one per line). Disabled unless --allow-static-credentials.
+    #[arg(long)]
+    pub user_password_hash_file: Option<PathBuf>,
+
+    /// Permit loading static credentials (inline or file). Defaults to false to encourage LDAPS.
+    #[arg(long, default_value_t = false)]
+    pub allow_static_credentials: bool,
+
     /// Maximum ASCII authentication attempts before failing the session (0 = unlimited).
     #[arg(long, default_value_t = 5)]
     pub ascii_attempt_limit: u8,
@@ -144,8 +160,83 @@ pub struct Args {
     pub legacy_nad_secret: Vec<(IpAddr, String)>,
 }
 
-pub fn credentials_map(args: &Args) -> HashMap<String, String> {
-    args.user_password.clone().into_iter().collect()
+#[derive(Clone, Default)]
+pub struct StaticCreds {
+    pub plain: HashMap<String, String>,
+    pub argon: HashMap<String, String>,
+}
+
+pub fn credentials_map(args: &Args) -> std::result::Result<StaticCreds, String> {
+    if !args.allow_static_credentials
+        && (!args.user_password.is_empty()
+            || args.user_password_file.is_some()
+            || !args.user_password_hash.is_empty()
+            || args.user_password_hash_file.is_some())
+    {
+        return Err(
+            "static credentials are disabled; set --allow-static-credentials to enable them"
+                .to_string(),
+        );
+    }
+
+    if (!args.user_password.is_empty() && args.user_password_file.is_some())
+        || (!args.user_password_hash.is_empty() && args.user_password_hash_file.is_some())
+    {
+        return Err(
+            "specify either inline or file for user_password and user_password_hash, not both"
+                .into(),
+        );
+    }
+
+    let mut creds = StaticCreds::default();
+    creds.plain.extend(args.user_password.clone());
+    creds.argon.extend(args.user_password_hash.clone());
+
+    if let Some(path) = args.user_password_file.as_ref() {
+        load_user_pass_file(path, &mut creds.plain)
+            .map_err(|e| format!("failed to read user_password_file {path:?}: {e}"))?;
+    }
+
+    if let Some(path) = args.user_password_hash_file.as_ref() {
+        load_user_pass_file(path, &mut creds.argon)
+            .map_err(|e| format!("failed to read user_password_hash_file {path:?}: {e}"))?;
+    }
+
+    Ok(creds)
+}
+
+fn load_user_pass_file(
+    path: &PathBuf,
+    target: &mut HashMap<String, String>,
+) -> std::io::Result<()> {
+    let data = std::fs::read_to_string(path)?;
+    for (idx, line) in data.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(2, ':');
+        let user = parts.next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing user on line {}", idx + 1),
+            )
+        })?;
+        let pass = parts.next().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing password on line {}", idx + 1),
+            )
+        })?;
+        if user.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("user cannot be empty on line {}", idx + 1),
+            ));
+        }
+        target.insert(user.to_string(), pass.to_string());
+    }
+    Ok(())
 }
 
 fn parse_user_password(s: &str) -> std::result::Result<(String, String), String> {

@@ -1,11 +1,10 @@
 use crate::auth::LdapConfig;
-use crate::config::{Args, credentials_map};
+use crate::config::{Args, StaticCreds, credentials_map};
 use crate::server::{
     ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
 };
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -58,12 +57,13 @@ async fn main() -> Result<()> {
                 .map(|(ip, sec)| (*ip, Arc::new(sec.clone().into_bytes())))
                 .collect(),
         );
-    if let (Some(secret), Some(psk)) = (args.secret.as_ref(), args.tls_psk.as_ref()) {
-        if secret == psk {
-            bail!("TACACS+ shared secret must not match TLS PSK");
-        }
+    if let (Some(secret), Some(psk)) = (args.secret.as_ref(), args.tls_psk.as_ref())
+        && secret == psk
+    {
+        bail!("TACACS+ shared secret must not match TLS PSK");
     }
-    let credentials: Arc<HashMap<String, String>> = Arc::new(credentials_map(&args));
+    let credentials: Arc<StaticCreds> =
+        Arc::new(credentials_map(&args).map_err(anyhow::Error::msg)?);
     let ascii_backoff_max_ms = args.ascii_backoff_max_ms;
     let ascii_lockout_limit = args.ascii_lockout_limit;
     let single_connect_idle_secs = args.single_connect_idle_secs;
@@ -130,10 +130,10 @@ async fn main() -> Result<()> {
         let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
         let ascii_backoff_ms = args.ascii_backoff_ms;
-        let ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let ascii_lockout_limit = ascii_lockout_limit;
-        let single_connect_idle_secs = single_connect_idle_secs;
-        let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let tls_ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let tls_ascii_lockout_limit = ascii_lockout_limit;
+        let tls_single_connect_idle_secs = single_connect_idle_secs;
+        let tls_single_connect_keepalive_secs = single_connect_keepalive_secs;
         let conn_limiter = conn_limiter.clone();
         let allowed_cn = args.tls_allowed_client_cn.clone();
         let allowed_san = args.tls_allowed_client_san.clone();
@@ -149,10 +149,10 @@ async fn main() -> Result<()> {
                 ascii_user_attempt_limit,
                 ascii_pass_attempt_limit,
                 ascii_backoff_ms,
-                ascii_backoff_max_ms,
-                ascii_lockout_limit,
-                single_connect_idle_secs,
-                single_connect_keepalive_secs,
+                tls_ascii_backoff_max_ms,
+                tls_ascii_lockout_limit,
+                tls_single_connect_idle_secs,
+                tls_single_connect_keepalive_secs,
                 conn_limiter,
                 allowed_cn,
                 allowed_san,
@@ -185,10 +185,10 @@ async fn main() -> Result<()> {
         let ascii_user_attempt_limit = args.ascii_user_attempt_limit;
         let ascii_pass_attempt_limit = args.ascii_pass_attempt_limit;
         let ascii_backoff_ms = args.ascii_backoff_ms;
-        let ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let ascii_lockout_limit = ascii_lockout_limit;
-        let single_connect_idle_secs = single_connect_idle_secs;
-        let single_connect_keepalive_secs = single_connect_keepalive_secs;
+        let legacy_ascii_backoff_max_ms = ascii_backoff_max_ms;
+        let legacy_ascii_lockout_limit = ascii_lockout_limit;
+        let legacy_single_connect_idle_secs = single_connect_idle_secs;
+        let legacy_single_connect_keepalive_secs = single_connect_keepalive_secs;
         let conn_limiter = conn_limiter.clone();
         let ldap_config = ldap_config.clone();
         handles.push(tokio::spawn(async move {
@@ -201,10 +201,10 @@ async fn main() -> Result<()> {
                 ascii_user_attempt_limit,
                 ascii_pass_attempt_limit,
                 ascii_backoff_ms,
-                ascii_backoff_max_ms,
-                ascii_lockout_limit,
-                single_connect_idle_secs,
-                single_connect_keepalive_secs,
+                legacy_ascii_backoff_max_ms,
+                legacy_ascii_lockout_limit,
+                legacy_single_connect_idle_secs,
+                legacy_single_connect_keepalive_secs,
                 conn_limiter,
                 ldap_config,
                 nad_secrets,

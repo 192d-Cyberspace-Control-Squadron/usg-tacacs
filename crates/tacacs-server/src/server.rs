@@ -7,11 +7,11 @@ use crate::auth::{
     LdapConfig, handle_chap_continue, ldap_fetch_groups, verify_pap, verify_pap_bytes,
     verify_pap_bytes_username, verify_password_sources,
 };
+use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
 use crate::session::SingleConnectState;
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
-use hex;
 use openssl::nid::Nid;
 use openssl::rand::rand_bytes;
 use openssl::x509::X509;
@@ -77,10 +77,10 @@ impl ConnLimiter {
 
     async fn release(&self, ip: &str) {
         let mut map = self.counts.lock().await;
-        if let Some(v) = map.get_mut(ip) {
-            if *v > 0 {
-                *v -= 1;
-            }
+        if let Some(v) = map.get_mut(ip)
+            && *v > 0
+        {
+            *v -= 1;
         }
     }
 }
@@ -191,12 +191,12 @@ fn authz_reason_response(
     detail: Option<String>,
 ) -> AuthorizationResponse {
     let mut data = format!("reason={reason}");
-    if let Some(extra) = detail {
-        if !extra.is_empty() {
-            data.push(';');
-            data.push_str("detail=");
-            data.push_str(&extra);
-        }
+    if let Some(extra) = detail
+        && !extra.is_empty()
+    {
+        data.push(';');
+        data.push_str("detail=");
+        data.push_str(&extra);
     }
     AuthorizationResponse {
         status,
@@ -478,13 +478,13 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
                 offending_index: None,
             });
         }
-        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref()) {
-            if proto.is_empty() {
-                return Err(AuthzSemanticError {
-                    msg: "authorization protocol attribute must have a value",
-                    offending_index: None,
-                });
-            }
+        if let Some(proto) = protocol_attr.and_then(|p| p.value.as_deref())
+            && proto.is_empty()
+        {
+            return Err(AuthzSemanticError {
+                msg: "authorization protocol attribute must have a value",
+                offending_index: None,
+            });
         }
         if !cmd_attrs.is_empty() || !cmd_arg_attrs.is_empty() {
             return Err(AuthzSemanticError {
@@ -549,27 +549,27 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
         .iter()
         .position(|a| a.to_lowercase().starts_with("service="))
         .unwrap_or(0);
-    let protocol_positions = req
+    let mut protocol_positions = req
         .args
         .iter()
         .enumerate()
         .filter(|(_, a)| a.to_lowercase().starts_with("protocol="))
         .map(|(i, _)| i);
     if protocol_positions.clone().any(|i| i < service_pos) {
-        let offending = protocol_positions.filter(|i| *i < service_pos).next();
+        let offending = protocol_positions.find(|i| *i < service_pos);
         return Err(AuthzSemanticError {
             msg: "service attribute must precede protocol attributes",
             offending_index: offending,
         });
     }
-    let cmd_positions = req
+    let mut cmd_positions = req
         .args
         .iter()
         .enumerate()
         .filter(|(_, a)| a.to_lowercase().starts_with("cmd"))
         .map(|(i, _)| i);
     if cmd_positions.clone().any(|i| i < service_pos) {
-        let offending = cmd_positions.filter(|i| *i < service_pos).next();
+        let offending = cmd_positions.find(|i| *i < service_pos);
         return Err(AuthzSemanticError {
             msg: "service attribute must precede command attributes",
             offending_index: offending,
@@ -579,24 +579,23 @@ fn validate_authorization_semantics(req: &AuthorizationRequest) -> Result<(), Au
     if let Some(attr) = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
+        && let Some(val) = attr.value.as_deref()
     {
-        if let Some(val) = attr.value.as_deref() {
-            let parsed: u32 = val.parse().map_err(|_| AuthzSemanticError {
-                msg: "priv-lvl must be numeric",
+        let parsed: u32 = val.parse().map_err(|_| AuthzSemanticError {
+            msg: "priv-lvl must be numeric",
+            offending_index: None,
+        })?;
+        if parsed > 0x0f {
+            return Err(AuthzSemanticError {
+                msg: "priv-lvl must be 0-15",
                 offending_index: None,
-            })?;
-            if parsed > 0x0f {
-                return Err(AuthzSemanticError {
-                    msg: "priv-lvl must be 0-15",
-                    offending_index: None,
-                });
-            }
-            if parsed as u8 != req.priv_lvl {
-                return Err(AuthzSemanticError {
-                    msg: "priv-lvl attribute must match header priv_lvl",
-                    offending_index: None,
-                });
-            }
+            });
+        }
+        if parsed as u8 != req.priv_lvl {
+            return Err(AuthzSemanticError {
+                msg: "priv-lvl attribute must match header priv_lvl",
+                offending_index: None,
+            });
         }
     }
     Ok(())
@@ -607,7 +606,7 @@ pub async fn serve_tls(
     acceptor: TlsAcceptor,
     policy: Arc<RwLock<PolicyEngine>>,
     secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<HashMap<String, String>>,
+    credentials: Arc<StaticCreds>,
     ascii_attempt_limit: u8,
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
@@ -627,43 +626,40 @@ pub async fn serve_tls(
     info!("listening for TLS TACACS+ on {}", addr);
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let acceptor = acceptor.clone();
-        let policy = policy.clone();
-        let secret = secret.clone();
-        let credentials = credentials.clone();
-        let ascii_user_attempt_limit = ascii_user_attempt_limit;
-        let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
-        let ascii_backoff_ms = ascii_backoff_ms;
-        let ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let ascii_lockout_limit = ascii_lockout_limit;
-        let single_connect_keepalive_secs = single_connect_keepalive_secs;
-        let limiter = conn_limiter.clone();
-        let allowed_cn = allowed_cn.clone();
-        let allowed_san = allowed_san.clone();
-        let ldap = ldap.clone();
+        let conn_acceptor = acceptor.clone();
+        let conn_policy = policy.clone();
+        let conn_secret = secret.clone();
+        let conn_credentials = credentials.clone();
+        let conn_limiter = conn_limiter.clone();
+        let conn_allowed_cn = allowed_cn.clone();
+        let conn_allowed_san = allowed_san.clone();
+        let conn_ldap = ldap.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
-            let guard = match limiter.try_acquire(&peer_ip).await {
+            let guard = match conn_limiter.try_acquire(&peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
                     return;
                 }
             };
-            match acceptor.accept(socket).await {
+            match conn_acceptor.accept(socket).await {
                 Ok(stream) => {
-                    if let Err(err) =
-                        enforce_client_cert_policy(&stream, &peer_addr, &allowed_cn, &allowed_san)
-                    {
+                    if let Err(err) = enforce_client_cert_policy(
+                        &stream,
+                        &peer_addr,
+                        &conn_allowed_cn,
+                        &conn_allowed_san,
+                    ) {
                         warn!(error = %err, peer = %peer_addr, "TLS client cert rejected");
                         return;
                     }
                     if let Err(err) = handle_connection(
                         stream,
-                        policy,
+                        conn_policy,
                         format!("{peer_addr}"),
-                        secret,
-                        credentials,
+                        conn_secret,
+                        conn_credentials,
                         ascii_attempt_limit,
                         ascii_user_attempt_limit,
                         ascii_pass_attempt_limit,
@@ -673,7 +669,7 @@ pub async fn serve_tls(
                         single_connect_idle_secs,
                         single_connect_keepalive_secs,
                         guard,
-                        ldap.clone(),
+                        conn_ldap.clone(),
                     )
                     .await
                     {
@@ -690,7 +686,7 @@ pub async fn serve_legacy(
     addr: SocketAddr,
     policy: Arc<RwLock<PolicyEngine>>,
     secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<HashMap<String, String>>,
+    credentials: Arc<StaticCreds>,
     ascii_attempt_limit: u8,
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
@@ -709,33 +705,25 @@ pub async fn serve_legacy(
     info!("listening for legacy TACACS+ on {}", addr);
     loop {
         let (socket, peer_addr) = listener.accept().await?;
-        let policy = policy.clone();
-        let secret = secret.clone();
-        let credentials = credentials.clone();
-        let nad_secrets = nad_secrets.clone();
-        let ascii_attempt_limit = ascii_attempt_limit;
-        let ascii_user_attempt_limit = ascii_user_attempt_limit;
-        let ascii_pass_attempt_limit = ascii_pass_attempt_limit;
-        let ascii_backoff_ms = ascii_backoff_ms;
-        let ascii_backoff_max_ms = ascii_backoff_max_ms;
-        let ascii_lockout_limit = ascii_lockout_limit;
-        let single_connect_idle_secs = single_connect_idle_secs;
-        let single_connect_keepalive_secs = single_connect_keepalive_secs;
-        let limiter = conn_limiter.clone();
-        let ldap = ldap.clone();
+        let conn_policy = policy.clone();
+        let default_secret = secret.clone();
+        let conn_credentials = credentials.clone();
+        let conn_nad_secrets = nad_secrets.clone();
+        let conn_limiter = conn_limiter.clone();
+        let conn_ldap = ldap.clone();
         tokio::spawn(async move {
             let peer_ip = peer_addr.ip().to_string();
-            let guard = match limiter.try_acquire(&peer_ip).await {
+            let guard = match conn_limiter.try_acquire(&peer_ip).await {
                 Some(g) => g,
                 None => {
                     warn!(peer = %peer_addr, "connection rejected: per-peer limit exceeded");
                     return;
                 }
             };
-            let conn_secret = if nad_secrets.is_empty() {
-                secret.clone()
+            let conn_secret = if conn_nad_secrets.is_empty() {
+                default_secret.clone()
             } else {
-                nad_secrets.get(&peer_addr.ip()).cloned()
+                conn_nad_secrets.get(&peer_addr.ip()).cloned()
             };
             if conn_secret.is_none() {
                 warn!(peer = %peer_addr, "legacy connection rejected: NAD not in allowlist");
@@ -743,10 +731,10 @@ pub async fn serve_legacy(
             }
             if let Err(err) = handle_connection(
                 socket,
-                policy,
+                conn_policy,
                 format!("{peer_addr}"),
                 conn_secret,
-                credentials,
+                conn_credentials,
                 ascii_attempt_limit,
                 ascii_user_attempt_limit,
                 ascii_pass_attempt_limit,
@@ -756,7 +744,7 @@ pub async fn serve_legacy(
                 single_connect_idle_secs,
                 single_connect_keepalive_secs,
                 guard,
-                ldap.clone(),
+                conn_ldap.clone(),
             )
             .await
             {
@@ -771,7 +759,7 @@ async fn handle_connection<S>(
     policy: Arc<RwLock<PolicyEngine>>,
     peer: String,
     secret: Option<Arc<Vec<u8>>>,
-    credentials: Arc<HashMap<String, String>>,
+    credentials: Arc<StaticCreds>,
     ascii_attempt_limit: u8,
     ascii_user_attempt_limit: u8,
     ascii_pass_attempt_limit: u8,
@@ -878,11 +866,11 @@ where
                     break;
                 }
                 if authz_single {
-                    if let Some(bound) = single_connect.session {
-                        if bound != request.header.session_id {
-                            warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on authorization");
-                            break;
-                        }
+                    if let Some(bound) = single_connect.session
+                        && bound != request.header.session_id
+                    {
+                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on authorization");
+                        break;
                     }
                     if let Some(ref bound_user) = single_connect.user {
                         if bound_user != &request.user {
@@ -1167,33 +1155,16 @@ where
                     .await;
                     break;
                 }
-                if let AuthenPacket::Start(start) = &packet {
-                    if single_connect.active {
-                        if let Some(ref bound_user) = single_connect.user {
-                            if bound_user != &start.user {
-                                warn!(peer = %peer, user = %start.user, bound_user = %bound_user, session = session_id, "single-connect violation: user mismatch on authentication");
-                                let reply = AuthenReply {
-                                    status: AUTHEN_STATUS_ERROR,
-                                    flags: 0,
-                                    server_msg: "single-connection user mismatch".into(),
-                                    server_msg_raw: Vec::new(),
-                                    data: Vec::new(),
-                                };
-                                let _ = write_authen_reply(
-                                    &mut stream,
-                                    &start.header,
-                                    &reply,
-                                    secret.as_deref().map(|s| s.as_slice()),
-                                )
-                                .await;
-                                break;
-                            }
-                        } else {
-                            warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: authentication with missing bound user");
+                if let AuthenPacket::Start(start) = &packet
+                    && single_connect.active
+                {
+                    if let Some(ref bound_user) = single_connect.user {
+                        if bound_user != &start.user {
+                            warn!(peer = %peer, user = %start.user, bound_user = %bound_user, session = session_id, "single-connect violation: user mismatch on authentication");
                             let reply = AuthenReply {
                                 status: AUTHEN_STATUS_ERROR,
                                 flags: 0,
-                                server_msg: "single-connection not authenticated".into(),
+                                server_msg: "single-connection user mismatch".into(),
                                 server_msg_raw: Vec::new(),
                                 data: Vec::new(),
                             };
@@ -1206,30 +1177,47 @@ where
                             .await;
                             break;
                         }
-                        if single_connect.locked {
-                            warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: repeated authentication after lock");
-                            let reply = AuthenReply {
-                                status: AUTHEN_STATUS_ERROR,
-                                flags: 0,
-                                server_msg: "single-connection already authenticated".into(),
-                                server_msg_raw: Vec::new(),
-                                data: Vec::new(),
-                            };
-                            let _ = write_authen_reply(
-                                &mut stream,
-                                &start.header,
-                                &reply,
-                                secret.as_deref().map(|s| s.as_slice()),
-                            )
-                            .await;
-                            break;
-                        }
-                        if let Some(bound) = single_connect.session {
-                            if bound != start.header.session_id {
-                                warn!(peer = %peer, user = %start.user, session = session_id, bound_session = bound, "single-connect violation: session-id mismatch on authentication");
-                                break;
-                            }
-                        }
+                    } else {
+                        warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: authentication with missing bound user");
+                        let reply = AuthenReply {
+                            status: AUTHEN_STATUS_ERROR,
+                            flags: 0,
+                            server_msg: "single-connection not authenticated".into(),
+                            server_msg_raw: Vec::new(),
+                            data: Vec::new(),
+                        };
+                        let _ = write_authen_reply(
+                            &mut stream,
+                            &start.header,
+                            &reply,
+                            secret.as_deref().map(|s| s.as_slice()),
+                        )
+                        .await;
+                        break;
+                    }
+                    if single_connect.locked {
+                        warn!(peer = %peer, user = %start.user, session = session_id, "single-connect violation: repeated authentication after lock");
+                        let reply = AuthenReply {
+                            status: AUTHEN_STATUS_ERROR,
+                            flags: 0,
+                            server_msg: "single-connection already authenticated".into(),
+                            server_msg_raw: Vec::new(),
+                            data: Vec::new(),
+                        };
+                        let _ = write_authen_reply(
+                            &mut stream,
+                            &start.header,
+                            &reply,
+                            secret.as_deref().map(|s| s.as_slice()),
+                        )
+                        .await;
+                        break;
+                    }
+                    if let Some(bound) = single_connect.session
+                        && bound != start.header.session_id
+                    {
+                        warn!(peer = %peer, user = %start.user, session = session_id, bound_session = bound, "single-connect violation: session-id mismatch on authentication");
+                        break;
                     }
                 }
                 let state = auth_states
@@ -1304,34 +1292,34 @@ where
                             action: None,
                         },
                     });
-                if let AuthenPacket::Continue(ref cont) = packet {
-                    if let Err(err) = state.validate_client(&cont.header) {
-                        warn!(error = %err, peer = %peer, "auth sequence invalid");
-                        let reply = AuthenReply {
-                            status: AUTHEN_STATUS_ERROR,
-                            flags: 0,
-                            server_msg: err.to_string(),
-                            server_msg_raw: Vec::new(),
-                            data: Vec::new(),
-                        };
-                        audit_event(
-                            "authn_sequence_error",
-                            &peer,
-                            state.username.as_deref().unwrap_or(""),
-                            session_id,
-                            "error",
-                            "sequence",
-                            &err.to_string(),
-                        );
-                        let _ = write_authen_reply(
-                            &mut stream,
-                            &cont.header,
-                            &reply,
-                            secret.as_deref().map(|s| s.as_slice()),
-                        )
-                        .await;
-                        break;
-                    }
+                if let AuthenPacket::Continue(ref cont) = packet
+                    && let Err(err) = state.validate_client(&cont.header)
+                {
+                    warn!(error = %err, peer = %peer, "auth sequence invalid");
+                    let reply = AuthenReply {
+                        status: AUTHEN_STATUS_ERROR,
+                        flags: 0,
+                        server_msg: err.to_string(),
+                        server_msg_raw: Vec::new(),
+                        data: Vec::new(),
+                    };
+                    audit_event(
+                        "authn_sequence_error",
+                        &peer,
+                        state.username.as_deref().unwrap_or(""),
+                        session_id,
+                        "error",
+                        "sequence",
+                        &err.to_string(),
+                    );
+                    let _ = write_authen_reply(
+                        &mut stream,
+                        &cont.header,
+                        &reply,
+                        secret.as_deref().map(|s| s.as_slice()),
+                    )
+                    .await;
+                    break;
                 }
 
                 let mut reply = match packet {
@@ -1340,13 +1328,12 @@ where
                             state.authen_type = Some(AUTHEN_TYPE_ASCII);
                             state.service = Some(start.service);
                             state.action = Some(start.action);
-                            let decoded_username = if start.user_raw.is_empty() {
-                                None
-                            } else if start.user.is_empty() {
-                                None
-                            } else {
-                                Some(start.user.clone())
-                            };
+                            let decoded_username =
+                                if start.user_raw.is_empty() || start.user.is_empty() {
+                                    None
+                                } else {
+                                    Some(start.user.clone())
+                                };
                             state.username = decoded_username;
                             state.username_raw = if start.user_raw.is_empty() {
                                 None
@@ -1383,10 +1370,10 @@ where
                             let username_prompt = |client_msg: Option<&[u8]>,
                                                    service: Option<u8>|
                              -> Vec<u8> {
-                                if let Some(msg) = client_msg {
-                                    if !msg.is_empty() {
-                                        return msg.to_vec();
-                                    }
+                                if let Some(msg) = client_msg
+                                    && !msg.is_empty()
+                                {
+                                    return msg.to_vec();
                                 }
                                 if let Some(custom) = policy_user_prompt.as_ref() {
                                     return custom.clone();
@@ -1399,10 +1386,10 @@ where
                             let password_prompt = |client_msg: Option<&[u8]>,
                                                    service: Option<u8>|
                              -> Vec<u8> {
-                                if let Some(msg) = client_msg {
-                                    if !msg.is_empty() {
-                                        return msg.to_vec();
-                                    }
+                                if let Some(msg) = client_msg
+                                    && !msg.is_empty()
+                                {
+                                    return msg.to_vec();
                                 }
                                 if let Some(custom) = policy_pass_prompt.as_ref() {
                                     return custom.clone();
@@ -1443,14 +1430,14 @@ where
                                         false
                                     }
                                 };
-                                if !ok {
-                                    if let Some(delay) = calc_ascii_backoff_capped(
+                                if !ok
+                                    && let Some(delay) = calc_ascii_backoff_capped(
                                         ascii_backoff_ms,
                                         state.ascii_attempts,
                                         ascii_backoff_max_ms,
-                                    ) {
-                                        sleep(delay).await;
-                                    }
+                                    )
+                                {
+                                    sleep(delay).await;
                                 }
                                 let svc_str = state
                                     .service
@@ -1758,11 +1745,12 @@ where
                         single_connect.reset();
                     }
                 }
-                if matches!(reply.status, AUTHEN_STATUS_PASS) && single_connect_flag {
-                    if let Some(user) = single_user {
-                        single_connect.activate(user.clone(), session_id);
-                        info!(peer = %peer, user = %user, session = session_id, "single-connect established");
-                    }
+                if matches!(reply.status, AUTHEN_STATUS_PASS)
+                    && single_connect_flag
+                    && let Some(user) = single_user
+                {
+                    single_connect.activate(user.clone(), session_id);
+                    info!(peer = %peer, user = %user, session = session_id, "single-connect established");
                 }
             }
             Ok(Some(Packet::Capability(cap))) => {
@@ -1851,11 +1839,11 @@ where
                     break;
                 }
                 if acct_single {
-                    if let Some(bound) = single_connect.session {
-                        if bound != request.header.session_id {
-                            warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on accounting");
-                            break;
-                        }
+                    if let Some(bound) = single_connect.session
+                        && bound != request.header.session_id
+                    {
+                        warn!(peer = %peer, user = %request.user, session = request.header.session_id, bound_session = bound, "single-connect violation: session-id mismatch on accounting");
+                        break;
                     }
                     if let Some(ref bound_user) = single_connect.user {
                         if bound_user != &request.user {

@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use crate::config::StaticCreds;
+use argon2::{PasswordHash, PasswordVerifier};
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};
 use openssl::hash::{MessageDigest, hash};
 use std::collections::HashMap;
@@ -75,17 +77,17 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
                 vec![&cfg.group_attr],
             )
             .and_then(|r| r.success());
-        if let Ok((entries, _)) = search {
-            if let Some(entry) = entries.into_iter().next() {
-                let se = SearchEntry::construct(entry);
-                let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
-                if !groups.iter().any(|g| {
-                    cfg.required_group
-                        .iter()
-                        .any(|req| g.eq_ignore_ascii_case(req))
-                }) {
-                    return false;
-                }
+        if let Ok((entries, _)) = search
+            && let Some(entry) = entries.into_iter().next()
+        {
+            let se = SearchEntry::construct(entry);
+            let groups = se.attrs.get(&cfg.group_attr).cloned().unwrap_or_default();
+            if !groups.iter().any(|g| {
+                cfg.required_group
+                    .iter()
+                    .any(|req| g.eq_ignore_ascii_case(req))
+            }) {
+                return false;
             }
         }
     }
@@ -137,47 +139,73 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
     Vec::new()
 }
 
-pub fn verify_pap(user: &str, password: &str, creds: &HashMap<String, String>) -> bool {
-    creds
+pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
+    if creds
+        .plain
         .get(user)
         .map(|stored| stored == password)
         .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(hash) = creds.argon.get(user) {
+        return verify_argon_hash(hash, password.as_bytes());
+    }
+    false
 }
 
-pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &HashMap<String, String>) -> bool {
-    creds
+fn verify_argon_hash(hash: &str, password: &[u8]) -> bool {
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        return false;
+    };
+    argon2::Argon2::default()
+        .verify_password(password, &parsed)
+        .is_ok()
+}
+
+pub fn verify_pap_bytes(user: &str, password: &[u8], creds: &StaticCreds) -> bool {
+    if creds
+        .plain
         .get(user)
         .map(|stored| stored.as_bytes() == password)
         .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(hash) = creds.argon.get(user) {
+        return verify_argon_hash(hash, password);
+    }
+    false
 }
 
-pub fn verify_pap_bytes_username(
-    username: &[u8],
-    password: &[u8],
-    creds: &HashMap<String, String>,
-) -> bool {
+pub fn verify_pap_bytes_username(username: &[u8], password: &[u8], creds: &StaticCreds) -> bool {
     creds
+        .plain
         .iter()
         .any(|(u, p)| u.as_bytes() == username && p.as_bytes() == password)
+        || creds
+            .argon
+            .iter()
+            .any(|(u, h)| u.as_bytes() == username && verify_argon_hash(h, password))
 }
 
 pub async fn verify_password_sources(
     username: Option<&str>,
     password: &[u8],
-    creds: &HashMap<String, String>,
+    creds: &StaticCreds,
     ldap: Option<&Arc<LdapConfig>>,
 ) -> bool {
     // Prefer raw-byte match against static credentials.
-    if let Some(user) = username {
-        if verify_pap_bytes(user, password, creds) {
-            return true;
-        }
+    if let Some(user) = username
+        && verify_pap_bytes(user, password, creds)
+    {
+        return true;
     }
     // Try LDAP if enabled and username/password are UTF-8.
-    if let (Some(user), Some(ldap_cfg)) = (username, ldap) {
-        if let Ok(pass_str) = std::str::from_utf8(password) {
-            return ldap_cfg.authenticate(user, pass_str).await;
-        }
+    if let (Some(user), Some(ldap_cfg)) = (username, ldap)
+        && let Ok(pass_str) = std::str::from_utf8(password)
+    {
+        return ldap_cfg.authenticate(user, pass_str).await;
     }
     false
 }
@@ -206,7 +234,7 @@ pub fn handle_chap_continue(
     user: &str,
     cont_data: &[u8],
     state: &mut AuthSessionState,
-    credentials: &HashMap<String, String>,
+    credentials: &StaticCreds,
 ) -> AuthenReply {
     if cont_data.len() != 1 + 16 {
         return AuthenReply {
@@ -228,7 +256,7 @@ pub fn handle_chap_continue(
     }
     if let Some(expected) = compute_chap_response(
         user,
-        credentials,
+        &credentials.plain,
         cont_data,
         state.challenge.as_deref().unwrap_or(&[]),
     ) {
