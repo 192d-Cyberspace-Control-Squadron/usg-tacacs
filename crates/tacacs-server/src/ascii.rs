@@ -314,6 +314,68 @@ pub async fn handle_ascii_continue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::StaticCreds;
+    use usg_tacacs_policy::PolicyDocument;
+
+    fn make_default_policy() -> PolicyEngine {
+        let doc = PolicyDocument {
+            default_allow: true,
+            shell_start: Default::default(),
+            ascii_prompts: None,
+            ascii_user_prompts: Default::default(),
+            ascii_password_prompts: Default::default(),
+            ascii_port_prompts: Default::default(),
+            ascii_remaddr_prompts: Default::default(),
+            allow_raw_server_msg: true,
+            raw_server_msg_allow_prefixes: vec![],
+            raw_server_msg_deny_prefixes: vec![],
+            raw_server_msg_user_overrides: Default::default(),
+            ascii_messages: None,
+            rules: vec![],
+        };
+        PolicyEngine::from_document(doc).expect("create test policy")
+    }
+
+    fn make_test_config() -> AsciiConfig {
+        AsciiConfig {
+            attempt_limit: 5,
+            user_attempt_limit: 3,
+            pass_attempt_limit: 5,
+            backoff_ms: 0,
+            backoff_max_ms: 5000,
+            lockout_limit: 0,
+        }
+    }
+
+    fn make_test_state() -> AuthSessionState {
+        AuthSessionState {
+            last_seq: 1,
+            expect_client: false,
+            authen_type: Some(1),
+            challenge: None,
+            username: Some("testuser".to_string()),
+            username_raw: None,
+            port: Some("tty0".to_string()),
+            port_raw: None,
+            rem_addr: Some("192.168.1.1".to_string()),
+            rem_addr_raw: None,
+            chap_id: None,
+            ascii_need_user: false,
+            ascii_need_pass: false,
+            ascii_attempts: 0,
+            ascii_user_attempts: 0,
+            ascii_pass_attempts: 0,
+            service: Some(1),
+            action: Some(1),
+        }
+    }
+
+    fn make_test_creds() -> StaticCreds {
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("testuser".into(), "testpass".into());
+        creds.plain.insert("admin".into(), "secret".into());
+        creds
+    }
 
     // ==================== calc_ascii_backoff_capped Tests ====================
 
@@ -468,5 +530,461 @@ mod tests {
         assert_eq!(config.attempt_limit, 0);
         assert_eq!(config.user_attempt_limit, 0);
         assert_eq!(config.pass_attempt_limit, 0);
+    }
+
+    // ==================== handle_ascii_continue Tests ====================
+
+    #[tokio::test]
+    async fn handle_ascii_continue_abort_flag_resets_state() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.ascii_attempts = 3;
+        state.ascii_user_attempts = 2;
+        state.ascii_pass_attempts = 1;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            AUTHEN_CONT_ABORT,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("abort"));
+        // State should be reset
+        assert!(state.ascii_need_user);
+        assert!(!state.ascii_need_pass);
+        assert!(state.username.is_none());
+        assert!(state.username_raw.is_none());
+        assert_eq!(state.ascii_attempts, 0);
+        assert_eq!(state.ascii_user_attempts, 0);
+        assert_eq!(state.ascii_pass_attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_attempt_limit_exceeded() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_attempts = 5; // At limit
+        let creds = make_test_creds();
+        let config = make_test_config(); // attempt_limit = 5
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("too many authentication attempts"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_user_attempt_limit_exceeded() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.ascii_user_attempts = 3; // At limit
+        let creds = make_test_creds();
+        let config = make_test_config(); // user_attempt_limit = 3
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("too many username attempts"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_pass_attempt_limit_exceeded() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.ascii_pass_attempts = 5; // At limit
+        let creds = make_test_creds();
+        let config = make_test_config(); // pass_attempt_limit = 5
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("too many password attempts"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_lockout_triggered() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.ascii_attempts = 2; // Will become 3
+        let creds = make_test_creds();
+        let mut config = make_test_config();
+        config.lockout_limit = 3;
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"newuser",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("locked out"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_username_collection_success() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.username = None;
+        state.username_raw = None;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"newuser",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_GETPASS);
+        assert_eq!(reply.flags, AUTHEN_FLAG_NOECHO);
+        assert!(!state.ascii_need_user);
+        assert!(state.ascii_need_pass);
+        assert_eq!(state.username, Some("newuser".to_string()));
+        assert_eq!(state.username_raw, Some(b"newuser".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_username_empty_reprompts() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.username = None;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"", // Empty username
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_GETUSER);
+        assert!(state.ascii_need_user);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_password_empty_reprompts() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"", // Empty password
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_GETPASS);
+        assert_eq!(reply.flags, AUTHEN_FLAG_NOECHO);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_auth_success() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.username = Some("testuser".to_string());
+        state.username_raw = Some(b"testuser".to_vec());
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"testpass", // Correct password
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_PASS);
+        assert!(reply.server_msg.contains("succeeded"));
+        assert!(!state.ascii_need_pass);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_auth_failure() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.username = Some("testuser".to_string());
+        state.username_raw = Some(b"testuser".to_vec());
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"wrongpass", // Wrong password
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
+        assert!(reply.server_msg.contains("invalid credentials"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_restart_state() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        // Neither need_user nor need_pass - triggers restart
+        state.ascii_need_user = false;
+        state.ascii_need_pass = false;
+        state.ascii_attempts = 2;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_RESTART);
+        assert!(reply.server_msg.contains("restart"));
+        // State should be reset
+        assert!(state.ascii_need_user);
+        assert!(!state.ascii_need_pass);
+        assert!(state.username.is_none());
+        assert!(state.username_raw.is_none());
+        assert_eq!(state.ascii_attempts, 0);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_auth_with_raw_username() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.username = None; // No decoded username
+        state.username_raw = Some(b"testuser".to_vec()); // Only raw
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"testpass",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_PASS);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_attempt_counter_increments() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.ascii_attempts = 0;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let _reply = handle_ascii_continue(
+            b"",
+            b"someuser",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(state.ascii_attempts, 1);
+        assert_eq!(state.ascii_user_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_pass_attempt_counter_increments() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.ascii_pass_attempts = 0;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let _reply = handle_ascii_continue(
+            b"",
+            b"somepass",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(state.ascii_pass_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_no_limit_zero_attempt_limit() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.ascii_attempts = 100; // High count
+        let creds = make_test_creds();
+        let mut config = make_test_config();
+        config.attempt_limit = 0; // Unlimited
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"user",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        // Should not fail due to attempt limit
+        assert_ne!(reply.status, AUTHEN_STATUS_FAIL);
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_with_service_action_in_message() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_pass = true;
+        state.username = Some("testuser".to_string());
+        state.service = Some(2);
+        state.action = Some(3);
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        let reply = handle_ascii_continue(
+            b"",
+            b"testpass",
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_PASS);
+        assert!(reply.server_msg.contains("service"));
+    }
+
+    #[tokio::test]
+    async fn handle_ascii_continue_username_non_utf8() {
+        let policy = Arc::new(RwLock::new(make_default_policy()));
+        let mut state = make_test_state();
+        state.ascii_need_user = true;
+        state.username = None;
+        let creds = make_test_creds();
+        let config = make_test_config();
+
+        // Non-UTF8 username
+        let reply = handle_ascii_continue(
+            b"",
+            &[0xFF, 0xFE, 0x80],
+            0,
+            &mut state,
+            &policy,
+            &creds,
+            &config,
+            None,
+        )
+        .await;
+
+        assert_eq!(reply.status, AUTHEN_STATUS_GETPASS);
+        assert!(state.username.is_none()); // UTF8 parse failed
+        assert_eq!(state.username_raw, Some(vec![0xFF, 0xFE, 0x80]));
     }
 }
