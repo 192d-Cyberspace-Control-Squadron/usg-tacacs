@@ -399,7 +399,7 @@ Deploy PostgreSQL with Patroni for policy-ingest service:
 - [ansible/roles/pgbouncer/](ansible/roles/pgbouncer/) - Connection pooling with transaction mode
 - [ansible/playbooks/deploy-postgresql-ha.yml](ansible/playbooks/deploy-postgresql-ha.yml) - Full stack deployment
 
-### 3.3 BGP Anycast
+### 3.3 BGP Anycast ✅ COMPLETE
 
 For geographic distribution across 184 locations:
 
@@ -426,6 +426,14 @@ For geographic distribution across 184 locations:
 - Withdraw route on health check failure
 - Community tagging for traffic engineering
 - BFD for fast failover
+
+**Implemented in**:
+
+- [ansible/roles/frr_anycast/](ansible/roles/frr_anycast/) - FRR BGP configuration with health-based route advertisement
+- Health check script monitors `/ready` endpoint and withdraws route on failure
+- BFD enabled for sub-second failover detection
+- Draining mode with lower local-preference during maintenance
+- [ansible/playbooks/deploy-bgp-anycast.yml](ansible/playbooks/deploy-bgp-anycast.yml) - Batch deployment across locations
 
 ### 3.4 Graceful Shutdown
 

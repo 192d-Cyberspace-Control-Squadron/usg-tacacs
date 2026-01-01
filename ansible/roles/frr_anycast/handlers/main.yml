@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# frr_anycast - Handlers
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart frr
+  ansible.builtin.systemd:
+    name: frr
+    state: restarted
+
+- name: Reload frr
+  ansible.builtin.command:
+    cmd: vtysh -c "write memory"
+  changed_when: true
+
+- name: Restart tacacs-anycast-health
+  ansible.builtin.systemd:
+    name: tacacs-anycast-health
+    state: restarted
+
+- name: Configure anycast interface
+  ansible.builtin.command:
+    cmd: ifup lo:1
+  changed_when: true
+  ignore_errors: true
+
+- name: Configure anycast interface rhel
+  ansible.builtin.command:
+    cmd: ifup lo:1
+  changed_when: true
+  ignore_errors: true
