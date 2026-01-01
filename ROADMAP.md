@@ -328,40 +328,45 @@ packer/
 
 ---
 
-## Phase 3: High Availability
+## Phase 3: High Availability ✅ COMPLETE
 
 **Priority**: High
 
 **Dependency**: Phase 1, Phase 2
 
-### 3.1 Local HA Pairs
+**Status**: HAProxy-based load balancing implemented (VRRP/keepalived skipped per project decision).
 
-Each location runs 2 TACACS+ servers with:
+### 3.1 HAProxy Load Balancing ✅ COMPLETE
+
+Each location runs HAProxy in front of TACACS+ servers for load balancing and failover:
 
 ```text
 ┌─────────────────────────────────────────┐
 │              Location NYC01              │
 │                                          │
-│    ┌─────────┐       ┌─────────┐        │
-│    │ TACACS  │       │ TACACS  │        │
-│    │ Primary │       │ Secondary│        │
-│    └────┬────┘       └────┬────┘        │
-│         │                  │             │
-│         └────────┬─────────┘             │
+│           ┌─────────────┐               │
+│           │   HAProxy   │               │
+│           │  :49/:300   │               │
+│           └──────┬──────┘               │
 │                  │                       │
-│           ┌──────┴──────┐               │
-│           │  keepalived │               │
-│           │  VIP: .100  │               │
-│           └─────────────┘               │
+│         ┌────────┴────────┐             │
+│         │                  │             │
+│    ┌────┴────┐       ┌────┴────┐        │
+│    │ TACACS  │       │ TACACS  │        │
+│    │   #1    │       │   #2    │        │
+│    └─────────┘       └─────────┘        │
 └─────────────────────────────────────────┘
 ```
 
-**keepalived Configuration**:
+**HAProxy Features**:
 
-- VRRP with preemption
-- Health check scripts calling `/ready` endpoint
-- Priority based on server role
-- Notification scripts for alerting
+- HTTP health checks against `/ready` endpoint
+- Round-robin or least-connections balancing
+- Session persistence via stick tables (optional)
+- Stats interface for monitoring
+- Graceful reload without dropping connections
+
+**Implemented in**: [ansible/roles/tacacs_ha/](ansible/roles/tacacs_ha/) - HAProxy configuration with health checks, multiple frontends (legacy/TLS/HTTP), and systemd hardening.
 
 ### 3.2 PostgreSQL HA (Policy Ingest)
 
@@ -901,8 +906,8 @@ Document per-location sizing:
 | ---------------- | -------- | ------ | ------------ | ------------------------- | ----------- |
 | 1. Observability | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
 | 2. IaC           | High     | High   | Phase 1      | Consistent deployments    | ✅ Complete |
-| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | 🔜 Next     |
-| 4. Secrets       | High     | Medium | Phase 2      | Security compliance       | Pending     |
+| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | ✅ Complete |
+| 4. Secrets       | High     | Medium | Phase 2      | Security compliance       | 🔜 Next     |
 | 5. GitOps        | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
 | 6. Enterprise    | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
 | 7. Operations    | Medium   | Low    | All          | Operational excellence    | Pending     |
@@ -943,5 +948,6 @@ These items provide immediate value with minimal effort:
 5. Document current state baseline for all 184 locations
 6. ~~Implement systemd hardening template (Phase 2.3)~~ ✅ DONE
 7. ~~Add OpenTelemetry tracing (Phase 1.4)~~ ✅ DONE
-8. Begin Phase 3: High Availability implementation
-9. Implement graceful shutdown with connection draining (Phase 3.4)
+8. ~~Implement HAProxy-based high availability (Phase 3)~~ ✅ DONE
+9. Implement graceful shutdown with connection draining (Phase 3.4) - code change required
+10. Begin Phase 4: Secrets & Certificate Management (Vault integration)

@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# tacacs_ha - Handlers
+# tacacs_ha - Handlers for HAProxy-based HA
 ---
-- name: Restart keepalived
+- name: Reload systemd
   ansible.builtin.systemd:
-    name: keepalived
-    state: restarted
+    daemon_reload: true
 
 - name: Restart haproxy
   ansible.builtin.systemd:
     name: haproxy
     state: restarted
+
+- name: Reload haproxy
+  ansible.builtin.systemd:
+    name: haproxy
+    state: reloaded

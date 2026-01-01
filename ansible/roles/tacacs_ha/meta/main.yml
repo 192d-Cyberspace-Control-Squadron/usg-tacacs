@@ -2,7 +2,7 @@
 ---
 galaxy_info:
   author: TACACS-RS Team
-  description: High availability configuration for TACACS+ (keepalived/HAProxy)
+  description: HAProxy-based high availability and load balancing for TACACS+
   license: AGPL-3.0-only
   min_ansible_version: "2.14"
   platforms:
@@ -19,5 +19,4 @@ galaxy_info:
         - jammy
         - noble
 
-dependencies:
-  - role: tacacs_server
+dependencies: []
