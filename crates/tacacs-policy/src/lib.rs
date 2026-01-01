@@ -449,15 +449,8 @@ fn validate_against_schema(value: &Value, schema_path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn normalizes_whitespace_and_case() {
-        assert_eq!(normalize_command(" Show  Run "), "show run");
-        assert_eq!(normalize_command("show\tint  Gi0/1"), "show int gi0/1");
-    }
-
-    #[test]
-    fn last_match_wins_with_priority() {
-        let doc = PolicyDocument {
+    fn make_policy_doc(rules: Vec<RuleConfig>) -> PolicyDocument {
+        PolicyDocument {
             default_allow: false,
             shell_start: HashMap::new(),
             ascii_prompts: None,
@@ -470,37 +463,464 @@ mod tests {
             raw_server_msg_deny_prefixes: Vec::new(),
             raw_server_msg_user_overrides: HashMap::new(),
             ascii_messages: None,
-            rules: vec![
-                RuleConfig {
-                    id: "allow1".into(),
-                    priority: 10,
-                    effect: Effect::Allow,
-                    pattern: "show.*".into(),
-                    users: vec![],
-                    groups: vec![],
-                },
-                RuleConfig {
-                    id: "deny1".into(),
-                    priority: 10,
-                    effect: Effect::Deny,
-                    pattern: "show.*".into(),
-                    users: vec![],
-                    groups: vec![],
-                },
-                RuleConfig {
-                    id: "allow2".into(),
-                    priority: 20,
-                    effect: Effect::Allow,
-                    pattern: "show.*".into(),
-                    users: vec![],
-                    groups: vec![],
-                },
-            ],
-        };
+            rules,
+        }
+    }
+
+    fn make_rule(id: &str, priority: i32, effect: Effect, pattern: &str) -> RuleConfig {
+        RuleConfig {
+            id: id.into(),
+            priority,
+            effect,
+            pattern: pattern.into(),
+            users: vec![],
+            groups: vec![],
+        }
+    }
+
+    // ==================== normalize_command Tests ====================
+
+    #[test]
+    fn normalizes_whitespace_and_case() {
+        assert_eq!(normalize_command(" Show  Run "), "show run");
+        assert_eq!(normalize_command("show\tint  Gi0/1"), "show int gi0/1");
+    }
+
+    #[test]
+    fn normalize_command_preserves_single_spaces() {
+        assert_eq!(normalize_command("show run"), "show run");
+    }
+
+    #[test]
+    fn normalize_command_handles_empty() {
+        assert_eq!(normalize_command(""), "");
+        assert_eq!(normalize_command("   "), "");
+    }
+
+    #[test]
+    fn normalize_command_handles_newlines() {
+        assert_eq!(normalize_command("show\n\nrun"), "show run");
+    }
+
+    // ==================== authorize Tests ====================
+
+    #[test]
+    fn authorize_default_deny_when_no_match() {
+        let doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Allow, "show.*")]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "configure terminal");
+        assert!(!decision.allowed);
+        assert!(decision.matched_rule.is_none());
+    }
+
+    #[test]
+    fn authorize_default_allow_when_configured() {
+        let mut doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Deny, "show.*")]);
+        doc.default_allow = true;
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "configure terminal");
+        assert!(decision.allowed);
+        assert!(decision.matched_rule.is_none());
+    }
+
+    #[test]
+    fn authorize_matches_rule() {
+        let doc = make_policy_doc(vec![make_rule("allow-show", 10, Effect::Allow, "show.*")]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "show running-config");
+        assert!(decision.allowed);
+        assert_eq!(decision.matched_rule.unwrap(), "allow-show");
+    }
+
+    #[test]
+    fn authorize_case_insensitive_command() {
+        let doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Allow, "show run")]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "SHOW RUN");
+        assert!(decision.allowed);
+    }
+
+    #[test]
+    fn authorize_case_insensitive_user() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "show.*");
+        rule.users = vec!["ALICE".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "show run");
+        assert!(decision.allowed);
+    }
+
+    #[test]
+    fn last_match_wins_with_priority() {
+        let doc = make_policy_doc(vec![
+            make_rule("allow1", 10, Effect::Allow, "show.*"),
+            make_rule("deny1", 10, Effect::Deny, "show.*"),
+            make_rule("allow2", 20, Effect::Allow, "show.*"),
+        ]);
 
         let engine = PolicyEngine::from_document(doc).unwrap();
         let decision = engine.authorize("alice", "show run");
         assert!(decision.allowed);
         assert_eq!(decision.matched_rule.unwrap(), "allow2");
+    }
+
+    #[test]
+    fn same_priority_last_rule_wins() {
+        let doc = make_policy_doc(vec![
+            make_rule("allow1", 10, Effect::Allow, "show.*"),
+            make_rule("deny1", 10, Effect::Deny, "show.*"),
+        ]);
+
+        let engine = PolicyEngine::from_document(doc).unwrap();
+        let decision = engine.authorize("alice", "show run");
+        assert!(!decision.allowed); // deny1 is last with same priority
+        assert_eq!(decision.matched_rule.unwrap(), "deny1");
+    }
+
+    #[test]
+    fn higher_priority_wins_regardless_of_order() {
+        let doc = make_policy_doc(vec![
+            make_rule("high-priority-deny", 100, Effect::Deny, "show.*"),
+            make_rule("low-priority-allow", 10, Effect::Allow, "show.*"),
+        ]);
+
+        let engine = PolicyEngine::from_document(doc).unwrap();
+        let decision = engine.authorize("alice", "show run");
+        assert!(!decision.allowed);
+        assert_eq!(decision.matched_rule.unwrap(), "high-priority-deny");
+    }
+
+    // ==================== User Filtering Tests ====================
+
+    #[test]
+    fn authorize_user_filter_matches() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "show.*");
+        rule.users = vec!["alice".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "show run");
+        assert!(decision.allowed);
+    }
+
+    #[test]
+    fn authorize_user_filter_no_match() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "show.*");
+        rule.users = vec!["bob".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let decision = engine.authorize("alice", "show run");
+        assert!(!decision.allowed); // Falls through to default_allow=false
+    }
+
+    #[test]
+    fn authorize_empty_users_matches_all() {
+        let rule = make_rule("r1", 10, Effect::Allow, "show.*");
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.authorize("alice", "show run").allowed);
+        assert!(engine.authorize("bob", "show run").allowed);
+        assert!(engine.authorize("charlie", "show run").allowed);
+    }
+
+    // ==================== Group Filtering Tests ====================
+
+    #[test]
+    fn authorize_with_groups_matches() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "configure.*");
+        rule.groups = vec!["admins".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let groups = vec!["admins".to_string(), "users".to_string()];
+        let decision = engine.authorize_with_groups("alice", &groups, "configure terminal");
+        assert!(decision.allowed);
+    }
+
+    #[test]
+    fn authorize_with_groups_no_match() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "configure.*");
+        rule.groups = vec!["admins".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let groups = vec!["users".to_string()];
+        let decision = engine.authorize_with_groups("alice", &groups, "configure terminal");
+        assert!(!decision.allowed);
+    }
+
+    #[test]
+    fn authorize_with_groups_case_insensitive() {
+        let mut rule = make_rule("r1", 10, Effect::Allow, "configure.*");
+        rule.groups = vec!["ADMINS".into()];
+        let doc = make_policy_doc(vec![rule]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let groups = vec!["admins".to_string()];
+        let decision = engine.authorize_with_groups("alice", &groups, "configure terminal");
+        assert!(decision.allowed);
+    }
+
+    // ==================== Shell Attributes Tests ====================
+
+    #[test]
+    fn shell_attributes_for_existing_user() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.shell_start.insert(
+            "alice".into(),
+            vec!["priv-lvl=15".into(), "timeout=300".into()],
+        );
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let attrs = engine.shell_attributes_for("alice");
+        assert!(attrs.is_some());
+        let attrs = attrs.unwrap();
+        assert!(attrs.contains(&"priv-lvl=15".to_string()));
+        assert!(attrs.contains(&"timeout=300".to_string()));
+    }
+
+    #[test]
+    fn shell_attributes_for_case_insensitive() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.shell_start
+            .insert("ALICE".into(), vec!["priv-lvl=15".into()]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let attrs = engine.shell_attributes_for("alice");
+        assert!(attrs.is_some());
+    }
+
+    #[test]
+    fn shell_attributes_for_nonexistent_user() {
+        let doc = make_policy_doc(vec![]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let attrs = engine.shell_attributes_for("unknown");
+        assert!(attrs.is_none());
+    }
+
+    // ==================== Prompt Tests ====================
+
+    #[test]
+    fn prompt_username_user_override() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_user_prompts
+            .insert("alice".into(), "Alice's Username: ".into());
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_username(Some("alice"), None, None);
+        assert_eq!(prompt, Some("Alice's Username: "));
+    }
+
+    #[test]
+    fn prompt_username_port_override() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_port_prompts
+            .insert("console".into(), "Console Login: ".into());
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_username(None, Some("console"), None);
+        assert_eq!(prompt, Some("Console Login: "));
+    }
+
+    #[test]
+    fn prompt_username_remaddr_override() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_remaddr_prompts
+            .insert("192.168.1.1".into(), "Remote Login: ".into());
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_username(None, None, Some("192.168.1.1"));
+        assert_eq!(prompt, Some("Remote Login: "));
+    }
+
+    #[test]
+    fn prompt_username_global_fallback() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_prompts = Some(AsciiPrompts {
+            username: Some("Global Username: ".into()),
+            password: None,
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_username(None, None, None);
+        assert_eq!(prompt, Some("Global Username: "));
+    }
+
+    #[test]
+    fn prompt_username_user_takes_priority() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_user_prompts
+            .insert("alice".into(), "User Prompt".into());
+        doc.ascii_port_prompts
+            .insert("console".into(), "Port Prompt".into());
+        doc.ascii_prompts = Some(AsciiPrompts {
+            username: Some("Global Prompt".into()),
+            password: None,
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        // User prompt should win
+        let prompt = engine.prompt_username(Some("alice"), Some("console"), None);
+        assert_eq!(prompt, Some("User Prompt"));
+    }
+
+    #[test]
+    fn prompt_password_user_override() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_password_prompts
+            .insert("alice".into(), "Alice's Password: ".into());
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_password(Some("alice"));
+        assert_eq!(prompt, Some("Alice's Password: "));
+    }
+
+    #[test]
+    fn prompt_password_global_fallback() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_prompts = Some(AsciiPrompts {
+            username: None,
+            password: Some("Enter Password: ".into()),
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        let prompt = engine.prompt_password(None);
+        assert_eq!(prompt, Some("Enter Password: "));
+    }
+
+    // ==================== Message Tests ====================
+
+    #[test]
+    fn message_success() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_messages = Some(AsciiMessages {
+            success: Some("Welcome!".into()),
+            failure: None,
+            abort: None,
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert_eq!(engine.message_success(), Some("Welcome!"));
+    }
+
+    #[test]
+    fn message_failure() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_messages = Some(AsciiMessages {
+            success: None,
+            failure: Some("Access Denied".into()),
+            abort: None,
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert_eq!(engine.message_failure(), Some("Access Denied"));
+    }
+
+    #[test]
+    fn message_abort() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.ascii_messages = Some(AsciiMessages {
+            success: None,
+            failure: None,
+            abort: Some("Session Aborted".into()),
+        });
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert_eq!(engine.message_abort(), Some("Session Aborted"));
+    }
+
+    // ==================== Raw Server Message Tests ====================
+
+    #[test]
+    fn observe_server_msg_allowed_by_default() {
+        let doc = make_policy_doc(vec![]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.observe_server_msg(None, None, None, None, None, b"hello"));
+    }
+
+    #[test]
+    fn observe_server_msg_empty_allowed() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.allow_raw_server_msg = false;
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        // Empty messages are always allowed
+        assert!(engine.observe_server_msg(None, None, None, None, None, b""));
+    }
+
+    #[test]
+    fn observe_server_msg_denied_when_disabled() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.allow_raw_server_msg = false;
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(!engine.observe_server_msg(None, None, None, None, None, b"hello"));
+    }
+
+    #[test]
+    fn observe_server_msg_deny_prefix() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.raw_server_msg_deny_prefixes = vec!["48656c".into()]; // "Hel" in hex
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(!engine.observe_server_msg(None, None, None, None, None, b"Hello"));
+        assert!(engine.observe_server_msg(None, None, None, None, None, b"World"));
+    }
+
+    #[test]
+    fn observe_server_msg_allow_prefix_required() {
+        let mut doc = make_policy_doc(vec![]);
+        doc.raw_server_msg_allow_prefixes = vec!["48656c".into()]; // "Hel" in hex
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.observe_server_msg(None, None, None, None, None, b"Hello"));
+        assert!(!engine.observe_server_msg(None, None, None, None, None, b"World"));
+    }
+
+    // ==================== Regex Pattern Tests ====================
+
+    #[test]
+    fn authorize_regex_pattern() {
+        let doc = make_policy_doc(vec![make_rule(
+            "r1",
+            10,
+            Effect::Allow,
+            "show (run|start|version)",
+        )]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.authorize("alice", "show run").allowed);
+        assert!(engine.authorize("alice", "show start").allowed);
+        assert!(engine.authorize("alice", "show version").allowed);
+        assert!(!engine.authorize("alice", "show interface").allowed);
+    }
+
+    #[test]
+    fn authorize_wildcard_pattern() {
+        let doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Allow, ".*")]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.authorize("alice", "any command").allowed);
+        assert!(engine.authorize("alice", "show run").allowed);
+        assert!(engine.authorize("alice", "configure terminal").allowed);
+    }
+
+    #[test]
+    fn authorize_anchored_pattern() {
+        // Patterns should be anchored (full match required)
+        let doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Allow, "show")]);
+        let engine = PolicyEngine::from_document(doc).unwrap();
+
+        assert!(engine.authorize("alice", "show").allowed);
+        assert!(!engine.authorize("alice", "show run").allowed); // Not a full match
     }
 }

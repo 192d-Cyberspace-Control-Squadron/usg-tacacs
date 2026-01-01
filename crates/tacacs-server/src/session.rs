@@ -66,3 +66,149 @@ impl TaskIdTracker {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== SingleConnectState Tests ====================
+
+    #[test]
+    fn single_connect_state_default() {
+        let state = SingleConnectState::default();
+        assert!(state.user.is_none());
+        assert!(!state.active);
+        assert!(!state.locked);
+        assert!(state.session.is_none());
+    }
+
+    #[test]
+    fn single_connect_state_activate() {
+        let mut state = SingleConnectState::default();
+        state.activate("alice".to_string(), 12345);
+
+        assert_eq!(state.user, Some("alice".to_string()));
+        assert!(state.active);
+        assert!(state.locked);
+        assert_eq!(state.session, Some(12345));
+    }
+
+    #[test]
+    fn single_connect_state_reset() {
+        let mut state = SingleConnectState::default();
+        state.activate("bob".to_string(), 99999);
+        state.reset();
+
+        assert!(state.user.is_none());
+        assert!(!state.active);
+        assert!(!state.locked);
+        assert!(state.session.is_none());
+    }
+
+    // ==================== TaskIdTracker Tests ====================
+
+    #[test]
+    fn task_id_tracker_start_stop_sequence() {
+        let mut tracker = TaskIdTracker::default();
+
+        // Start a task
+        assert!(tracker.start(100).is_ok());
+
+        // Stop the task
+        assert!(tracker.stop(100).is_ok());
+
+        // Can reuse the same task_id after stop
+        assert!(tracker.start(100).is_ok());
+    }
+
+    #[test]
+    fn task_id_tracker_rejects_duplicate_start() {
+        let mut tracker = TaskIdTracker::default();
+
+        assert!(tracker.start(200).is_ok());
+
+        // Starting same task_id again should fail (RFC 8907 violation)
+        let result = tracker.start(200);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("RFC 8907"));
+    }
+
+    #[test]
+    fn task_id_tracker_stop_unknown_task() {
+        let mut tracker = TaskIdTracker::default();
+
+        // Stopping a task that was never started
+        let result = tracker.stop(300);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown task_id"));
+    }
+
+    #[test]
+    fn task_id_tracker_watchdog_active_task() {
+        let mut tracker = TaskIdTracker::default();
+
+        tracker.start(400).unwrap();
+
+        // Watchdog should succeed for active task
+        assert!(tracker.watchdog(400).is_ok());
+
+        // Multiple watchdogs are fine
+        assert!(tracker.watchdog(400).is_ok());
+    }
+
+    #[test]
+    fn task_id_tracker_watchdog_unknown_task() {
+        let mut tracker = TaskIdTracker::default();
+
+        // Watchdog for unknown task should fail
+        let result = tracker.watchdog(500);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("unknown task_id"));
+    }
+
+    #[test]
+    fn task_id_tracker_watchdog_after_stop_fails() {
+        let mut tracker = TaskIdTracker::default();
+
+        tracker.start(600).unwrap();
+        tracker.stop(600).unwrap();
+
+        // Watchdog after stop should fail
+        let result = tracker.watchdog(600);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn task_id_tracker_multiple_concurrent_tasks() {
+        let mut tracker = TaskIdTracker::default();
+
+        // Start multiple tasks
+        assert!(tracker.start(1).is_ok());
+        assert!(tracker.start(2).is_ok());
+        assert!(tracker.start(3).is_ok());
+
+        // Watchdog all of them
+        assert!(tracker.watchdog(1).is_ok());
+        assert!(tracker.watchdog(2).is_ok());
+        assert!(tracker.watchdog(3).is_ok());
+
+        // Stop in different order
+        assert!(tracker.stop(2).is_ok());
+        assert!(tracker.stop(1).is_ok());
+        assert!(tracker.stop(3).is_ok());
+
+        // All should be stoppable only once
+        assert!(tracker.stop(1).is_err());
+    }
+
+    #[test]
+    fn task_id_tracker_double_stop_fails() {
+        let mut tracker = TaskIdTracker::default();
+
+        tracker.start(700).unwrap();
+        assert!(tracker.stop(700).is_ok());
+
+        // Second stop should fail
+        assert!(tracker.stop(700).is_err());
+    }
+}

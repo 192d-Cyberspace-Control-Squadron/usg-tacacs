@@ -59,3 +59,157 @@ pub fn apply_body_crypto(header: &Header, body: &mut [u8], secret: Option<&[u8]>
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_header(session_id: u32, version: u8, seq_no: u8, flags: u8) -> Header {
+        Header {
+            version,
+            packet_type: crate::TYPE_AUTHEN,
+            seq_no,
+            flags,
+            session_id,
+            length: 0,
+        }
+    }
+
+    #[test]
+    fn crypto_skips_unencrypted_flag() {
+        let header = make_header(12345, crate::VERSION, 1, FLAG_UNENCRYPTED);
+        let mut body = vec![0x01, 0x02, 0x03, 0x04];
+        let original = body.clone();
+
+        let result = apply_body_crypto(&header, &mut body, Some(b"testsecret"));
+        assert!(result.is_ok());
+        // Body should be unchanged when UNENCRYPTED flag is set
+        assert_eq!(body, original);
+    }
+
+    #[test]
+    fn crypto_requires_secret_when_encrypted() {
+        let header = make_header(12345, crate::VERSION, 1, 0);
+        let mut body = vec![0x01, 0x02, 0x03, 0x04];
+
+        let result = apply_body_crypto(&header, &mut body, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no secret"));
+    }
+
+    #[test]
+    fn crypto_rejects_short_secret() {
+        let header = make_header(12345, crate::VERSION, 1, 0);
+        let mut body = vec![0x01, 0x02, 0x03, 0x04];
+
+        // Secret less than MIN_SECRET_LEN (8 bytes)
+        let result = apply_body_crypto(&header, &mut body, Some(b"short"));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too short"));
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_roundtrip_encryption() {
+        let header = make_header(0xDEADBEEF, crate::VERSION, 1, 0);
+        let secret = b"mysecretkey123";
+        let original = b"Hello, TACACS+ world!".to_vec();
+        let mut encrypted = original.clone();
+
+        // Encrypt
+        apply_body_crypto(&header, &mut encrypted, Some(secret)).unwrap();
+
+        // Encrypted should differ from original
+        assert_ne!(encrypted, original);
+
+        // Decrypt (XOR is symmetric)
+        apply_body_crypto(&header, &mut encrypted, Some(secret)).unwrap();
+
+        // Should match original
+        assert_eq!(encrypted, original);
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_empty_body() {
+        let header = make_header(12345, crate::VERSION, 1, 0);
+        let secret = b"testsecret";
+        let mut body: Vec<u8> = vec![];
+
+        // Empty body should work without error
+        let result = apply_body_crypto(&header, &mut body, Some(secret));
+        assert!(result.is_ok());
+        assert!(body.is_empty());
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_single_byte_body() {
+        let header = make_header(12345, crate::VERSION, 1, 0);
+        let secret = b"testsecret";
+        let original = vec![0x42];
+        let mut body = original.clone();
+
+        apply_body_crypto(&header, &mut body, Some(secret)).unwrap();
+        assert_ne!(body, original);
+
+        // Roundtrip
+        apply_body_crypto(&header, &mut body, Some(secret)).unwrap();
+        assert_eq!(body, original);
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_multi_block_body() {
+        // Body larger than 16 bytes (MD5 block size) to test pad chaining
+        let header = make_header(0x12345678, crate::VERSION, 3, 0);
+        let secret = b"longsecretkey";
+        let original: Vec<u8> = (0..64).collect(); // 64 bytes = 4 MD5 blocks
+        let mut body = original.clone();
+
+        apply_body_crypto(&header, &mut body, Some(secret)).unwrap();
+        assert_ne!(body, original);
+
+        // Roundtrip
+        apply_body_crypto(&header, &mut body, Some(secret)).unwrap();
+        assert_eq!(body, original);
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_different_session_ids_produce_different_ciphertext() {
+        let secret = b"testsecret";
+        let original = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        let header1 = make_header(0x11111111, crate::VERSION, 1, 0);
+        let header2 = make_header(0x22222222, crate::VERSION, 1, 0);
+
+        let mut body1 = original.clone();
+        let mut body2 = original.clone();
+
+        apply_body_crypto(&header1, &mut body1, Some(secret)).unwrap();
+        apply_body_crypto(&header2, &mut body2, Some(secret)).unwrap();
+
+        // Different session IDs should produce different ciphertext
+        assert_ne!(body1, body2);
+    }
+
+    #[cfg(feature = "legacy-md5")]
+    #[test]
+    fn crypto_different_seq_nos_produce_different_ciphertext() {
+        let secret = b"testsecret";
+        let original = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        let header1 = make_header(0x12345678, crate::VERSION, 1, 0);
+        let header2 = make_header(0x12345678, crate::VERSION, 3, 0);
+
+        let mut body1 = original.clone();
+        let mut body2 = original.clone();
+
+        apply_body_crypto(&header1, &mut body1, Some(secret)).unwrap();
+        apply_body_crypto(&header2, &mut body2, Some(secret)).unwrap();
+
+        // Different sequence numbers should produce different ciphertext
+        assert_ne!(body1, body2);
+    }
+}
