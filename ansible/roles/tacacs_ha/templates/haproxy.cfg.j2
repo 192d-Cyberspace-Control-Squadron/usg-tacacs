@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# HAProxy configuration for TACACS+ load balancing
+# Managed by Ansible - do not edit manually
+
+global
+    log /dev/log local0
+    log /dev/log local1 notice
+    chroot /var/lib/haproxy
+    stats socket /run/haproxy/admin.sock mode 660 level admin
+    stats timeout 30s
+    user haproxy
+    group haproxy
+    daemon
+
+    # Security hardening
+    ssl-default-bind-ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256
+    ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+
+defaults
+    log     global
+    mode    tcp
+    option  tcplog
+    option  dontlognull
+    timeout connect 5000ms
+    timeout client  50000ms
+    timeout server  50000ms
+    errorfile 400 /etc/haproxy/errors/400.http
+    errorfile 403 /etc/haproxy/errors/403.http
+    errorfile 408 /etc/haproxy/errors/408.http
+    errorfile 500 /etc/haproxy/errors/500.http
+    errorfile 502 /etc/haproxy/errors/502.http
+    errorfile 503 /etc/haproxy/errors/503.http
+    errorfile 504 /etc/haproxy/errors/504.http
+
+{% if tacacs_ha_haproxy_stats_enabled | bool %}
+frontend stats
+    bind *:{{ tacacs_ha_haproxy_stats_port }}
+    mode http
+    stats enable
+    stats uri /stats
+    stats refresh 10s
+    stats auth {{ tacacs_ha_haproxy_stats_user }}:{{ tacacs_ha_haproxy_stats_password }}
+    stats admin if TRUE
+{% endif %}
+
+# TACACS+ legacy port (49)
+frontend tacacs_legacy
+    bind *:{{ tacacs_ha_haproxy_frontend_port }}
+    mode tcp
+    option tcplog
+    default_backend tacacs_servers_legacy
+
+backend tacacs_servers_legacy
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for backend in tacacs_ha_backends %}
+    server {{ backend.name }} {{ backend.address }}:{{ backend.port | default(49) }} check inter 2000 rise 2 fall 3
+{% endfor %}
+
+# TACACS+ TLS port (300)
+frontend tacacs_tls
+    bind *:300
+    mode tcp
+    option tcplog
+    default_backend tacacs_servers_tls
+
+backend tacacs_servers_tls
+    mode tcp
+    balance roundrobin
+    option tcp-check
+{% for backend in tacacs_ha_backends %}
+    server {{ backend.name }} {{ backend.address }}:{{ backend.tls_port | default(300) }} check inter 2000 rise 2 fall 3
+{% endfor %}

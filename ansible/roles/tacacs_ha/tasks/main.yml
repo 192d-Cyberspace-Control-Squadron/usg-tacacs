@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# tacacs_ha - Main tasks for HA configuration
+---
+- name: Install keepalived
+  ansible.builtin.package:
+    name: keepalived
+    state: present
+
+- name: Install HAProxy
+  ansible.builtin.package:
+    name: haproxy
+    state: present
+  when: tacacs_ha_haproxy_enabled | bool
+
+- name: Create health check script
+  ansible.builtin.template:
+    src: check_tacacs.sh.j2
+    dest: /etc/keepalived/check_tacacs.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy keepalived configuration
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart keepalived
+
+- name: Deploy HAProxy configuration
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    owner: root
+    group: root
+    mode: "0644"
+    validate: haproxy -c -f %s
+  when: tacacs_ha_haproxy_enabled | bool
+  notify: Restart haproxy
+
+- name: Enable and start keepalived
+  ansible.builtin.systemd:
+    name: keepalived
+    enabled: true
+    state: started
+
+- name: Enable and start HAProxy
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+  when: tacacs_ha_haproxy_enabled | bool
+
+- name: Configure firewall for VRRP
+  ansible.posix.firewalld:
+    rich_rule: "rule protocol value='vrrp' accept"
+    permanent: true
+    state: enabled
+    immediate: true
+  when: tacacs_configure_firewall | default(true) | bool

@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# tacacs_ha - Default variables for HA configuration
+---
+# Keepalived configuration
+tacacs_ha_vip: ""  # Virtual IP address (required)
+tacacs_ha_vip_interface: "eth0"
+tacacs_ha_vrrp_id: 51
+tacacs_ha_vrrp_password: "CHANGE_ME"
+tacacs_ha_priority: 100  # Primary=100, Secondary=90
+tacacs_ha_preempt: true
+tacacs_ha_advert_int: 1
+
+# Health check configuration
+tacacs_ha_health_url: "http://127.0.0.1:{{ tacacs_http_port | default(8080) }}/ready"
+tacacs_ha_health_interval: 2
+tacacs_ha_health_timeout: 3
+tacacs_ha_health_rise: 2
+tacacs_ha_health_fall: 2
+
+# HAProxy configuration (optional, for load balancing)
+tacacs_ha_haproxy_enabled: false
+tacacs_ha_haproxy_frontend_port: 49
+tacacs_ha_haproxy_stats_enabled: true
+tacacs_ha_haproxy_stats_port: 8404
+tacacs_ha_haproxy_stats_user: admin
+tacacs_ha_haproxy_stats_password: "CHANGE_ME"
+
+# Backend servers (for HAProxy)
+tacacs_ha_backends: []
+# tacacs_ha_backends:
+#   - name: tacacs01
+#     address: 10.0.0.11
+#     port: 49
+#   - name: tacacs02
+#     address: 10.0.0.12
+#     port: 49
+
+# Notification
+tacacs_ha_notify_script: ""
+tacacs_ha_notify_email: ""

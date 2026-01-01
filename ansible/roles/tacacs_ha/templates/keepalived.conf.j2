@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Keepalived configuration for TACACS+ HA
+# Managed by Ansible - do not edit manually
+
+global_defs {
+    router_id {{ inventory_hostname }}
+    script_user root
+    enable_script_security
+{% if tacacs_ha_notify_email | length > 0 %}
+    notification_email {
+        {{ tacacs_ha_notify_email }}
+    }
+    notification_email_from tacacs@{{ ansible_fqdn }}
+    smtp_server localhost
+    smtp_connect_timeout 30
+{% endif %}
+}
+
+vrrp_script check_tacacs {
+    script "/etc/keepalived/check_tacacs.sh"
+    interval {{ tacacs_ha_health_interval }}
+    timeout {{ tacacs_ha_health_timeout }}
+    rise {{ tacacs_ha_health_rise }}
+    fall {{ tacacs_ha_health_fall }}
+    weight -50
+}
+
+vrrp_instance TACACS_VIP {
+    state {{ 'MASTER' if tacacs_ha_priority >= 100 else 'BACKUP' }}
+    interface {{ tacacs_ha_vip_interface }}
+    virtual_router_id {{ tacacs_ha_vrrp_id }}
+    priority {{ tacacs_ha_priority }}
+{% if tacacs_ha_preempt | bool %}
+    preempt_delay 60
+{% else %}
+    nopreempt
+{% endif %}
+    advert_int {{ tacacs_ha_advert_int }}
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ tacacs_ha_vrrp_password }}
+    }
+
+    virtual_ipaddress {
+        {{ tacacs_ha_vip }}/32 dev {{ tacacs_ha_vip_interface }}
+    }
+
+    track_script {
+        check_tacacs
+    }
+
+{% if tacacs_ha_notify_script | length > 0 %}
+    notify_master "{{ tacacs_ha_notify_script }} master"
+    notify_backup "{{ tacacs_ha_notify_script }} backup"
+    notify_fault "{{ tacacs_ha_notify_script }} fault"
+{% endif %}
+}
