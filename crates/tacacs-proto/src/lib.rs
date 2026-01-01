@@ -782,3 +782,566 @@ fn is_clean_eof(err: &anyhow::Error) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== Constants Tests ====================
+
+    #[test]
+    fn version_constant_is_correct() {
+        // Major version 0xC (12), minor 0
+        assert_eq!(VERSION, 0xC0);
+    }
+
+    #[test]
+    fn packet_type_constants() {
+        assert_eq!(TYPE_AUTHEN, 0x01);
+        assert_eq!(TYPE_AUTHOR, 0x02);
+        assert_eq!(TYPE_ACCT, 0x03);
+        assert_eq!(TYPE_CAPABILITY, 0x04);
+    }
+
+    #[test]
+    fn authen_status_constants() {
+        assert_eq!(AUTHEN_STATUS_PASS, 0x01);
+        assert_eq!(AUTHEN_STATUS_FAIL, 0x02);
+        assert_eq!(AUTHEN_STATUS_GETDATA, 0x03);
+        assert_eq!(AUTHEN_STATUS_GETUSER, 0x04);
+        assert_eq!(AUTHEN_STATUS_GETPASS, 0x05);
+        assert_eq!(AUTHEN_STATUS_RESTART, 0x06);
+        assert_eq!(AUTHEN_STATUS_ERROR, 0x07);
+        assert_eq!(AUTHEN_STATUS_FOLLOW, 0x21);
+    }
+
+    #[test]
+    fn authen_type_constants() {
+        assert_eq!(AUTHEN_TYPE_ASCII, 0x01);
+        assert_eq!(AUTHEN_TYPE_PAP, 0x02);
+        assert_eq!(AUTHEN_TYPE_CHAP, 0x03);
+        assert_eq!(AUTHEN_TYPE_ARAP, 0x04);
+    }
+
+    #[test]
+    fn author_status_constants() {
+        assert_eq!(AUTHOR_STATUS_PASS_ADD, 0x01);
+        assert_eq!(AUTHOR_STATUS_PASS_REPL, 0x02);
+        assert_eq!(AUTHOR_STATUS_FAIL, 0x10);
+        assert_eq!(AUTHOR_STATUS_ERROR, 0x11);
+    }
+
+    #[test]
+    fn acct_constants() {
+        assert_eq!(ACCT_STATUS_SUCCESS, 0x01);
+        assert_eq!(ACCT_STATUS_ERROR, 0x02);
+        assert_eq!(ACCT_STATUS_FOLLOW, 0x21);
+        assert_eq!(ACCT_FLAG_START, 0x02);
+        assert_eq!(ACCT_FLAG_STOP, 0x04);
+        assert_eq!(ACCT_FLAG_WATCHDOG, 0x08);
+    }
+
+    // ==================== validate_author_request Tests ====================
+
+    #[test]
+    fn validate_author_request_shell_valid() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+
+        let result = validate_author_request(&req);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_author_request_login_with_cmd() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("login")
+            .with_cmd("show");
+
+        let result = validate_author_request(&req);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_author_request_missing_service() {
+        let req = AuthorizationRequest::builder(123).with_cmd("show");
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("service"));
+    }
+
+    #[test]
+    fn validate_author_request_invalid_authen_method() {
+        let mut req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+        req.authen_method = 0; // Invalid
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_method"));
+    }
+
+    #[test]
+    fn validate_author_request_invalid_priv_lvl() {
+        let mut req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+        req.priv_lvl = 16; // Invalid, max is 15
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn validate_author_request_invalid_authen_type() {
+        let mut req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+        req.authen_type = 5; // Invalid, max is 4
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_type"));
+    }
+
+    #[test]
+    fn validate_author_request_shell_with_cmd_fails() {
+        let req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .with_cmd("show");
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cmd"));
+    }
+
+    #[test]
+    fn validate_author_request_shell_without_protocol_fails() {
+        let req = AuthorizationRequest::builder(123).with_service("shell");
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("protocol"));
+    }
+
+    #[test]
+    fn validate_author_request_unknown_service_fails() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=unknown_service".to_string())
+            .add_arg("cmd=test".to_string());
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("service"));
+    }
+
+    #[test]
+    fn validate_author_request_empty_service_fails() {
+        let req = AuthorizationRequest::builder(123)
+            .add_arg("service=".to_string())
+            .add_arg("cmd=test".to_string());
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_author_request_priv_lvl_mismatch_fails() {
+        let mut req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .add_arg("priv-lvl=15".to_string());
+        req.priv_lvl = 1; // Mismatch with attribute
+
+        let result = validate_author_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv-lvl"));
+    }
+
+    #[test]
+    fn validate_author_request_priv_lvl_match_succeeds() {
+        let mut req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec")
+            .add_arg("priv-lvl=15".to_string());
+        req.priv_lvl = 15;
+
+        let result = validate_author_request(&req);
+        assert!(result.is_ok());
+    }
+
+    // ==================== validate_accounting_request Tests ====================
+
+    #[test]
+    fn validate_accounting_request_start_valid() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .with_task_id("42");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_request_stop_valid() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("42")
+            .add_arg("elapsed_time=100".to_string())
+            .with_status("0")
+            .with_bytes("1024", "2048");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_request_watchdog_valid() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_WATCHDOG)
+            .with_service("shell")
+            .with_task_id("42");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_request_invalid_flags() {
+        let mut req = AccountingRequest::builder(123, ACCT_FLAG_START).with_service("shell");
+        req.flags = 0; // No flag set
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("flags"));
+    }
+
+    #[test]
+    fn validate_accounting_request_multiple_flags_fails() {
+        let mut req = AccountingRequest::builder(123, ACCT_FLAG_START).with_service("shell");
+        req.flags = ACCT_FLAG_START | ACCT_FLAG_STOP;
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_accounting_request_invalid_authen_method() {
+        let mut req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .with_task_id("42");
+        req.authen_method = 0;
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("authen_method"));
+    }
+
+    #[test]
+    fn validate_accounting_request_invalid_priv_lvl() {
+        let mut req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .with_task_id("42");
+        req.priv_lvl = 16;
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn validate_accounting_request_start_missing_task_id() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START).with_service("shell");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("task_id"));
+    }
+
+    #[test]
+    fn validate_accounting_request_stop_missing_elapsed_time() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("42")
+            .with_status("0")
+            .with_bytes("0", "0");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("elapsed_time"));
+    }
+
+    #[test]
+    fn validate_accounting_request_stop_missing_bytes() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("42")
+            .add_arg("elapsed_time=100".to_string())
+            .with_status("0");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("bytes"));
+    }
+
+    #[test]
+    fn validate_accounting_request_non_numeric_task_id_fails() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_START)
+            .with_service("shell")
+            .add_arg("task_id=abc".to_string());
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("numeric"));
+    }
+
+    #[test]
+    fn validate_accounting_request_status_too_high() {
+        let req = AccountingRequest::builder(123, ACCT_FLAG_STOP)
+            .with_service("shell")
+            .with_task_id("42")
+            .add_arg("elapsed_time=100".to_string())
+            .add_arg("status=16".to_string()) // Invalid, max is 15
+            .with_bytes("0", "0");
+
+        let result = validate_accounting_request(&req);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("status"));
+    }
+
+    // ==================== validate_authen_start Tests ====================
+
+    #[test]
+    fn validate_authen_start_ascii_valid() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string());
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_authen_start_pap_valid() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_PAP, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string())
+            .with_data(b"password".to_vec());
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_authen_start_chap_valid() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_CHAP, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string())
+            .with_data(vec![0x42, 0x01, 0x02, 0x03]); // CHAP ID + response
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_authen_start_even_seq_fails() {
+        let mut start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_ASCII, 1);
+        start.header.seq_no = 2; // Even sequence
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("odd"));
+    }
+
+    #[test]
+    fn validate_authen_start_invalid_type_fails() {
+        let start = AuthenStart::builder(123, 1, 1, 0, 1); // Type 0 invalid
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("type"));
+    }
+
+    #[test]
+    fn validate_authen_start_invalid_priv_lvl_fails() {
+        let start = AuthenStart::builder(123, 1, 16, AUTHEN_TYPE_ASCII, 1); // priv_lvl 16 invalid
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("priv_lvl"));
+    }
+
+    #[test]
+    fn validate_authen_start_pap_no_data_fails() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_PAP, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string());
+        // No data (password)
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("PAP"));
+    }
+
+    #[test]
+    fn validate_authen_start_chap_no_data_fails() {
+        let start = AuthenStart::builder(123, 1, 1, AUTHEN_TYPE_CHAP, 1)
+            .with_user(b"alice".to_vec(), "alice".to_string());
+        // No data
+
+        let result = validate_authen_start(&start);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("CHAP"));
+    }
+
+    // ==================== validate_authen_continue Tests ====================
+
+    #[test]
+    fn validate_authen_continue_valid() {
+        let cont = AuthenContinue::builder(123).with_seq(2);
+
+        let result = validate_authen_continue(&cont);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_authen_continue_with_noecho_flag() {
+        let cont = AuthenContinue::builder(123)
+            .with_seq(2)
+            .with_flags(AUTHEN_FLAG_NOECHO);
+
+        let result = validate_authen_continue(&cont);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_authen_continue_odd_seq_fails() {
+        let cont = AuthenContinue::builder(123).with_seq(3); // Odd sequence
+
+        let result = validate_authen_continue(&cont);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("even"));
+    }
+
+    #[test]
+    fn validate_authen_continue_invalid_flags_fails() {
+        let cont = AuthenContinue::builder(123).with_seq(2).with_flags(0xFF);
+
+        let result = validate_authen_continue(&cont);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("flags"));
+    }
+
+    // ==================== validate_author_response_header Tests ====================
+
+    #[test]
+    fn validate_author_response_header_valid() {
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_AUTHOR,
+            seq_no: 2,
+            flags: 0,
+            session_id: 123,
+            length: 10,
+        };
+
+        let result = validate_author_response_header(&header);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_author_response_header_wrong_type_fails() {
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_AUTHEN, // Wrong
+            seq_no: 2,
+            flags: 0,
+            session_id: 123,
+            length: 10,
+        };
+
+        let result = validate_author_response_header(&header);
+        assert!(result.is_err());
+    }
+
+    // ==================== validate_accounting_response_header Tests ====================
+
+    #[test]
+    fn validate_accounting_response_header_valid() {
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_ACCT,
+            seq_no: 2,
+            flags: 0,
+            session_id: 123,
+            length: 10,
+        };
+
+        let result = validate_accounting_response_header(&header);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_accounting_response_header_wrong_type_fails() {
+        let header = Header {
+            version: VERSION,
+            packet_type: TYPE_AUTHOR, // Wrong
+            seq_no: 2,
+            flags: 0,
+            session_id: 123,
+            length: 10,
+        };
+
+        let result = validate_accounting_response_header(&header);
+        assert!(result.is_err());
+    }
+
+    // ==================== is_clean_eof Tests ====================
+
+    #[test]
+    fn is_clean_eof_returns_true_for_unexpected_eof() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "test");
+        let err = anyhow::Error::from(io_err);
+        assert!(is_clean_eof(&err));
+    }
+
+    #[test]
+    fn is_clean_eof_returns_false_for_other_errors() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "test");
+        let err = anyhow::Error::from(io_err);
+        assert!(!is_clean_eof(&err));
+    }
+
+    #[test]
+    fn is_clean_eof_returns_false_for_non_io_errors() {
+        let err = anyhow::anyhow!("some other error");
+        assert!(!is_clean_eof(&err));
+    }
+
+    // ==================== Packet Enum Tests ====================
+
+    #[test]
+    fn packet_enum_debug() {
+        let author_req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+        let packet = Packet::Authorization(author_req);
+        let debug_str = format!("{:?}", packet);
+        assert!(debug_str.contains("Authorization"));
+    }
+
+    #[test]
+    fn packet_enum_clone() {
+        let author_req = AuthorizationRequest::builder(123)
+            .with_service("shell")
+            .with_protocol("exec");
+        let packet = Packet::Authorization(author_req);
+        let cloned = packet.clone();
+        match cloned {
+            Packet::Authorization(req) => {
+                assert_eq!(req.header.session_id, 123);
+            }
+            _ => panic!("Expected Authorization packet"),
+        }
+    }
+}
