@@ -435,27 +435,36 @@ For geographic distribution across 184 locations:
 - Draining mode with lower local-preference during maintenance
 - [ansible/playbooks/deploy-bgp-anycast.yml](ansible/playbooks/deploy-bgp-anycast.yml) - Batch deployment across locations
 
-### 3.4 Graceful Shutdown
+### 3.4 Graceful Shutdown ✅ COMPLETE
 
-Implement connection draining in `tacacs-server`:
+Implemented connection draining in `tacacs-server`:
 
 1. Receive SIGTERM
 2. Stop accepting new connections
-3. Set `/ready` to return 503
+3. Set `/ready` to return 503 with `{"status": "draining"}`
 4. Wait for active sessions to complete (configurable timeout)
-5. Force-close remaining connections
+5. Set `/live` to return 503 after force timeout
 6. Exit cleanly
 
-**Configuration**:
+**CLI Arguments**:
 
-```json
-{
-  "shutdown": {
-    "drain_timeout_seconds": 30,
-    "force_close_after_seconds": 60
-  }
-}
+```bash
+--shutdown-drain-timeout-secs <SECONDS>  # Drain timeout (default: 30)
+--shutdown-force-timeout-secs <SECONDS>  # Force timeout (default: 30)
 ```
+
+**Implementation Details**:
+
+- SIGTERM handler sets `ready=false` immediately, causing `/ready` to return 503 with `{"status": "draining"}`
+- HAProxy/load balancers detect this and stop sending new connections
+- After drain timeout, `alive=false` is set, causing `/live` to return 503
+- After force timeout, the process exits cleanly
+
+**Implemented in**:
+
+- [config.rs](crates/tacacs-server/src/config.rs) - `--shutdown-drain-timeout-secs` and `--shutdown-force-timeout-secs` CLI arguments
+- [main.rs](crates/tacacs-server/src/main.rs) - SIGTERM signal handler with phased shutdown
+- [http.rs](crates/tacacs-server/src/http.rs) - `/ready` returns `{"status": "draining"}` during graceful shutdown
 
 ---
 
@@ -465,18 +474,18 @@ Implement connection draining in `tacacs-server`:
 
 **Dependency**: Phase 2 (Ansible)
 
-### 4.1 HashiCorp Vault Integration
+### 4.1 OpenBao Integration
 
-Add Vault client to `tacacs-server` for secrets:
+Add [OpenBao](https://openbao.org/) (open-source Vault fork) client to `tacacs-server` for secrets management:
 
 ```json
 {
-  "vault": {
+  "openbao": {
     "enabled": true,
-    "address": "https://vault.internal:8200",
+    "address": "https://openbao.internal:8200",
     "auth_method": "approle",
-    "role_id_file": "/etc/tacacs/vault-role-id",
-    "secret_id_file": "/etc/tacacs/vault-secret-id",
+    "role_id_file": "/etc/tacacs/openbao-role-id",
+    "secret_id_file": "/etc/tacacs/openbao-secret-id",
     "secrets": {
       "shared_secret": "secret/data/tacacs/shared-secret",
       "ldap_bind_password": "secret/data/tacacs/ldap-bind"
@@ -486,7 +495,7 @@ Add Vault client to `tacacs-server` for secrets:
 }
 ```
 
-**Vault Paths**:
+**OpenBao Paths**:
 
 ```text
 secret/
@@ -501,17 +510,24 @@ secret/
     └── pki/                   # PKI secrets engine
 ```
 
-### 4.2 Vault PKI for Certificates
+**Why OpenBao**:
 
-Use Vault PKI secrets engine for automatic TLS:
+- Open-source fork of HashiCorp Vault (Apache 2.0 / MPL 2.0 licensed)
+- API-compatible with Vault - existing tooling and integrations work
+- Linux Foundation project with community governance
+- No BSL licensing restrictions for enterprise use
+
+### 4.2 OpenBao PKI for Certificates
+
+Use OpenBao PKI secrets engine for automatic TLS:
 
 ```bash
-vault secrets enable pki
-vault write pki/root/generate/internal \
+bao secrets enable pki
+bao write pki/root/generate/internal \
   common_name="TACACS Root CA" \
   ttl=87600h
 
-vault write pki/roles/tacacs-server \
+bao write pki/roles/tacacs-server \
   allowed_domains="tacacs.internal" \
   allow_subdomains=true \
   max_ttl=720h
@@ -913,19 +929,46 @@ Document per-location sizing:
 | `ldap_pool_size`     | 5       | 20    | LDAP throughput |
 | `policy_cache_ttl`   | 60s     | 300s  | Reduced I/O     |
 
+### 7.5 Code Quality Improvements
+
+Refactor functions with too many arguments to use configuration structs:
+
+| Function | Location | Args | Proposed Refactor |
+| -------- | -------- | ---- | ----------------- |
+| `serve_tls` | server.rs:604 | 17 | Create `TlsServerConfig` struct |
+| `serve_legacy` | server.rs:685 | 15 | Create `LegacyServerConfig` struct |
+| `handle_connection` | server.rs:757 | 15 | Create `ConnectionContext` struct |
+| `handle_ascii_continue` | ascii.rs:101 | 8 | Create `AsciiContinueContext` struct |
+| `new_from_start` | authen.rs:198 | 10 | Create `AuthenStartParams` struct |
+
+**Benefits**:
+
+- Improved code readability and maintainability
+- Easier to add new parameters without breaking API
+- Better documentation via struct field comments
+- Enables builder pattern for optional parameters
+
+**Dead Code Cleanup**:
+
+| Item | Location | Action |
+| ---- | -------- | ------ |
+| `AuthnTimer` | metrics.rs:231 | Remove or integrate into auth flow |
+| `AuthzTimer` | metrics.rs:259 | Remove or integrate into authz flow |
+| `make_argon_creds` | auth.rs:314 | Remove test helper or mark `#[cfg(test)]` |
+
 ---
 
 ## Implementation Priority Matrix
 
-| Phase            | Priority | Effort | Dependencies | Business Value            | Status      |
-| ---------------- | -------- | ------ | ------------ | ------------------------- | ----------- |
-| 1. Observability | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
-| 2. IaC           | High     | High   | Phase 1      | Consistent deployments    | ✅ Complete |
-| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | ✅ Complete |
-| 4. Secrets       | High     | Medium | Phase 2      | Security compliance       | 🔜 Next     |
-| 5. GitOps        | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
-| 6. Enterprise    | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
-| 7. Operations    | Medium   | Low    | All          | Operational excellence    | Pending     |
+| Phase                | Priority | Effort | Dependencies | Business Value            | Status      |
+| -------------------- | -------- | ------ | ------------ | ------------------------- | ----------- |
+| 1. Observability     | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
+| 2. IaC               | High     | High   | Phase 1      | Consistent deployments    | ✅ Complete |
+| 3. HA                | High     | High   | Phase 1, 2   | 99.9% uptime              | ✅ Complete |
+| 4. Secrets (OpenBao) | High     | Medium | Phase 2      | Security compliance       | 🔜 Next     |
+| 5. GitOps            | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
+| 6. Enterprise        | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
+| 7. Operations        | Medium   | Low    | All          | Operational excellence    | Pending     |
 
 ---
 
@@ -964,5 +1007,5 @@ These items provide immediate value with minimal effort:
 6. ~~Implement systemd hardening template (Phase 2.3)~~ ✅ DONE
 7. ~~Add OpenTelemetry tracing (Phase 1.4)~~ ✅ DONE
 8. ~~Implement HAProxy-based high availability (Phase 3)~~ ✅ DONE
-9. Implement graceful shutdown with connection draining (Phase 3.4) - code change required
-10. Begin Phase 4: Secrets & Certificate Management (Vault integration)
+9. ~~Implement graceful shutdown with connection draining (Phase 3.4)~~ ✅ DONE
+10. Begin Phase 4: Secrets & Certificate Management (OpenBao integration)
