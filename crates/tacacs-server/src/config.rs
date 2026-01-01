@@ -200,6 +200,70 @@ pub struct Args {
     /// timeout (default: 30, total max shutdown time = drain + force).
     #[arg(long, default_value_t = 30)]
     pub shutdown_force_timeout_secs: u64,
+
+    // ==================== OpenBao Integration ====================
+
+    /// Enable OpenBao/Vault integration for secrets management.
+    #[arg(long, default_value_t = false)]
+    pub openbao_enabled: bool,
+
+    /// OpenBao server address (e.g., https://openbao.internal:8200).
+    #[arg(long, default_value = "https://openbao.internal:8200")]
+    pub openbao_address: String,
+
+    /// OpenBao authentication method (currently only "approle" is supported).
+    #[arg(long, default_value = "approle")]
+    pub openbao_auth_method: String,
+
+    /// Path to file containing the AppRole role_id.
+    #[arg(long)]
+    pub openbao_role_id_file: Option<PathBuf>,
+
+    /// Path to file containing the AppRole secret_id.
+    #[arg(long)]
+    pub openbao_secret_id_file: Option<PathBuf>,
+
+    /// Optional CA certificate file for OpenBao TLS verification.
+    #[arg(long)]
+    pub openbao_ca_file: Option<PathBuf>,
+
+    /// Secret refresh interval in seconds (how often to poll OpenBao for secret changes).
+    #[arg(long, default_value_t = 300)]
+    pub openbao_refresh_interval_secs: u64,
+
+    /// Base path for TACACS secrets in OpenBao KV v2 engine.
+    #[arg(long, default_value = "secret/data/tacacs")]
+    pub openbao_secret_path: String,
+
+    /// Location identifier for per-location secrets in OpenBao (e.g., NYC01).
+    #[arg(long)]
+    pub openbao_location: Option<String>,
+
+    // ==================== OpenBao PKI (Certificate Management) ====================
+
+    /// Enable automatic TLS certificate management via OpenBao PKI secrets engine.
+    #[arg(long, default_value_t = false)]
+    pub openbao_pki_enabled: bool,
+
+    /// OpenBao PKI secrets engine mount point.
+    #[arg(long, default_value = "pki")]
+    pub openbao_pki_mount: String,
+
+    /// OpenBao PKI role name for certificate issuance.
+    #[arg(long, default_value = "tacacs-server")]
+    pub openbao_pki_role: String,
+
+    /// Common name for the issued TLS certificate.
+    #[arg(long)]
+    pub openbao_pki_common_name: Option<String>,
+
+    /// Certificate TTL in hours (default: 720 = 30 days).
+    #[arg(long, default_value_t = 720)]
+    pub openbao_pki_ttl_hours: u32,
+
+    /// Renewal threshold as percentage of TTL (renew when this % of lifetime has elapsed).
+    #[arg(long, default_value_t = 70)]
+    pub openbao_pki_renewal_threshold: u8,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -567,6 +631,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);
@@ -627,6 +706,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);
@@ -685,6 +779,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);
@@ -743,6 +852,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);
@@ -802,6 +926,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);
@@ -860,6 +999,21 @@ mod tests {
             otel_service_name: "tacacs-server".into(),
             shutdown_drain_timeout_secs: 30,
             shutdown_force_timeout_secs: 30,
+            openbao_enabled: false,
+            openbao_address: "https://openbao.internal:8200".into(),
+            openbao_auth_method: "approle".into(),
+            openbao_role_id_file: None,
+            openbao_secret_id_file: None,
+            openbao_ca_file: None,
+            openbao_refresh_interval_secs: 300,
+            openbao_secret_path: "secret/data/tacacs".into(),
+            openbao_location: None,
+            openbao_pki_enabled: false,
+            openbao_pki_mount: "pki".into(),
+            openbao_pki_role: "tacacs-server".into(),
+            openbao_pki_common_name: None,
+            openbao_pki_ttl_hours: 720,
+            openbao_pki_renewal_threshold: 70,
         };
 
         let result = credentials_map(&args);

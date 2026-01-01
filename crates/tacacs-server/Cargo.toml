@@ -15,6 +15,7 @@ rustls.workspace = true
 rustls-pemfile.workspace = true
 usg-tacacs-policy.workspace = true
 usg-tacacs-proto.workspace = true
+usg-tacacs-secrets.workspace = true
 openssl.workspace = true
 hex.workspace = true
 ldap3.workspace = true

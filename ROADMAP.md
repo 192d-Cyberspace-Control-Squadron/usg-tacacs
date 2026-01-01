@@ -468,13 +468,15 @@ Implemented connection draining in `tacacs-server`:
 
 ---
 
-## Phase 4: Secrets & Certificate Management
+## Phase 4: Secrets & Certificate Management ✅ COMPLETE
 
 **Priority**: High
 
 **Dependency**: Phase 2 (Ansible)
 
-### 4.1 OpenBao Integration
+**Status**: All 3 items complete.
+
+### 4.1 OpenBao Integration ✅ COMPLETE
 
 Add [OpenBao](https://openbao.org/) (open-source Vault fork) client to `tacacs-server` for secrets management:
 
@@ -517,7 +519,24 @@ secret/
 - Linux Foundation project with community governance
 - No BSL licensing restrictions for enterprise use
 
-### 4.2 OpenBao PKI for Certificates
+**Implemented in**:
+
+- [crates/tacacs-secrets/](crates/tacacs-secrets/) - New crate for secrets management with OpenBao client
+- [crates/tacacs-server/src/config.rs](crates/tacacs-server/src/config.rs) - CLI arguments for OpenBao configuration
+- [ansible/roles/tacacs_openbao/](ansible/roles/tacacs_openbao/) - Ansible role for OpenBao setup and AppRole provisioning
+
+**CLI Arguments**:
+
+```text
+--openbao-enabled              Enable OpenBao integration
+--openbao-address <URL>        OpenBao server address
+--openbao-role-id-file <PATH>  AppRole role_id file
+--openbao-secret-id-file <PATH> AppRole secret_id file
+--openbao-refresh-interval-secs <SECS> Secret refresh interval
+--openbao-location <CODE>      Location for per-location secrets
+```
+
+### 4.2 OpenBao PKI for Certificates ✅ COMPLETE
 
 Use OpenBao PKI secrets engine for automatic TLS:
 
@@ -539,7 +558,23 @@ bao write pki/roles/tacacs-server \
 - Graceful reload on cert refresh
 - Alert on renewal failure
 
-### 4.3 SOPS for Secrets in Git
+**Implemented in**:
+
+- [crates/tacacs-secrets/src/openbao/pki.rs](crates/tacacs-secrets/src/openbao/pki.rs) - PKI client for certificate issuance
+- [ansible/roles/tacacs_openbao/tasks/pki.yml](ansible/roles/tacacs_openbao/tasks/pki.yml) - Ansible tasks for PKI setup
+
+**CLI Arguments**:
+
+```text
+--openbao-pki-enabled          Enable PKI certificate management
+--openbao-pki-mount <MOUNT>    PKI secrets engine mount point
+--openbao-pki-role <ROLE>      PKI role name for issuance
+--openbao-pki-common-name <CN> Certificate common name
+--openbao-pki-ttl-hours <HOURS> Certificate TTL in hours
+--openbao-pki-renewal-threshold <PCT> Renewal threshold percentage
+```
+
+### 4.3 SOPS for Secrets in Git ✅ COMPLETE
 
 Encrypt secrets in GitOps repo with SOPS:
 
@@ -559,6 +594,12 @@ sops:
 - Decrypt at deploy time
 - Never commit plaintext secrets
 - Audit log for secret access
+
+**Implemented in**:
+
+- [ansible/roles/tacacs_sops/](ansible/roles/tacacs_sops/) - Ansible role for SOPS installation and configuration
+- Supports both age encryption and AWS KMS
+- Automatic SOPS binary installation and age key deployment
 
 ---
 
@@ -965,8 +1006,8 @@ Refactor functions with too many arguments to use configuration structs:
 | 1. Observability     | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
 | 2. IaC               | High     | High   | Phase 1      | Consistent deployments    | ✅ Complete |
 | 3. HA                | High     | High   | Phase 1, 2   | 99.9% uptime              | ✅ Complete |
-| 4. Secrets (OpenBao) | High     | Medium | Phase 2      | Security compliance       | 🔜 Next     |
-| 5. GitOps            | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
+| 4. Secrets (OpenBao) | High     | Medium | Phase 2      | Security compliance       | ✅ Complete |
+| 5. GitOps            | High     | Medium | Phase 2, 4   | Centralized management    | 🔜 Next     |
 | 6. Enterprise        | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
 | 7. Operations        | Medium   | Low    | All          | Operational excellence    | Pending     |
 
@@ -1008,4 +1049,5 @@ These items provide immediate value with minimal effort:
 7. ~~Add OpenTelemetry tracing (Phase 1.4)~~ ✅ DONE
 8. ~~Implement HAProxy-based high availability (Phase 3)~~ ✅ DONE
 9. ~~Implement graceful shutdown with connection draining (Phase 3.4)~~ ✅ DONE
-10. Begin Phase 4: Secrets & Certificate Management (OpenBao integration)
+10. ~~Begin Phase 4: Secrets & Certificate Management (OpenBao integration)~~ ✅ DONE
+11. Begin Phase 5: GitOps with ArgoCD (repository structure and ApplicationSet)
