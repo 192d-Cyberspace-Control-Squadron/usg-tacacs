@@ -8,7 +8,7 @@ use clap::Parser;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::MIN_SECRET_LEN;
@@ -100,6 +100,22 @@ async fn main() -> Result<()> {
     let mut handles = Vec::new();
 
     if let Some(addr) = args.listen_tls {
+        // RFC 9887: TACACS+ over TLS 1.3 SHOULD use port 300
+        const RFC9887_TLS_PORT: u16 = 300;
+        if addr.port() != RFC9887_TLS_PORT {
+            warn!(
+                "TLS listener on port {} instead of RFC 9887 standard port {} (tacacss)",
+                addr.port(),
+                RFC9887_TLS_PORT
+            );
+        }
+        // Note: RFC 9887 specifies that obfuscation MUST NOT be used over TLS.
+        // This implementation applies obfuscation for defense-in-depth, which
+        // deviates from strict RFC 9887 but provides additional security layer.
+        // A future --rfc9887-strict mode could disable obfuscation over TLS.
+        info!(
+            "TLS mode: MD5 obfuscation applied for defense-in-depth (RFC 9887 permits TLS-only encryption)"
+        );
         let allow_unencrypted = !(args.forbid_unencrypted
             && shared_secret
                 .as_ref()

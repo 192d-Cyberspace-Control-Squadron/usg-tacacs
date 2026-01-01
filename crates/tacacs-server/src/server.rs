@@ -9,7 +9,7 @@ use crate::auth::{
 };
 use crate::config::StaticCreds;
 use crate::policy::enforce_server_msg;
-use crate::session::SingleConnectState;
+use crate::session::{SingleConnectState, TaskIdTracker};
 use crate::tls::build_tls_config;
 use anyhow::{Context, Result};
 use openssl::nid::Nid;
@@ -777,6 +777,7 @@ where
     use std::collections::HashMap;
     let mut auth_states: HashMap<u32, AuthSessionState> = HashMap::new();
     let mut single_connect = SingleConnectState::default();
+    let mut task_tracker = TaskIdTracker::default();
     audit_event(
         "conn_open",
         &peer,
@@ -1884,8 +1885,60 @@ where
                 if let Err(err) = validate_accounting_response_header(&request.header.response(0)) {
                     warn!(error = %err, peer = %peer, "accounting header invalid");
                 }
+                // RFC 8907: Track task_ids to prevent reuse in start records
+                let task_tracking_result: Result<(), &'static str> = (|| {
+                    let attrs = request.attributes();
+                    let task_id: Option<u32> = attrs
+                        .iter()
+                        .find(|a| a.name.eq_ignore_ascii_case("task_id"))
+                        .and_then(|a| a.value.as_deref())
+                        .and_then(|v| v.parse().ok());
+                    if let Some(tid) = task_id {
+                        if request.flags & ACCT_FLAG_START != 0 {
+                            task_tracker.start(tid)?;
+                        } else if request.flags & ACCT_FLAG_STOP != 0 {
+                            if let Err(e) = task_tracker.stop(tid) {
+                                // Warn but don't fail for orphan stops (some NADs misbehave)
+                                warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
+                            }
+                        } else if request.flags & ACCT_FLAG_WATCHDOG != 0
+                            && let Err(e) = task_tracker.watchdog(tid)
+                        {
+                            // Warn but don't fail for orphan watchdogs
+                            warn!(peer = %peer, task_id = tid, error = %e, "task_id tracking warning");
+                        }
+                    }
+                    Ok(())
+                })();
                 let response = match validate_accounting_semantics(&request) {
-                    Ok(()) => accounting_success_response(&request),
+                    Ok(()) if task_tracking_result.is_ok() => accounting_success_response(&request),
+                    Ok(()) => {
+                        // Semantic validation passed but task_id tracking failed (reuse)
+                        let msg = task_tracking_result.unwrap_err();
+                        warn!(
+                            peer = %peer,
+                            user = %request.user,
+                            session = request.header.session_id,
+                            reason = %msg,
+                            "accounting request rejected by task_id tracking (RFC 8907)"
+                        );
+                        let resp = AccountingResponse {
+                            status: ACCT_STATUS_ERROR,
+                            server_msg: msg.to_string(),
+                            data: format!("reason=task-id-reuse;detail={msg}"),
+                            args: Vec::new(),
+                        };
+                        audit_event(
+                            "acct_task_id_reuse",
+                            &peer,
+                            &request.user,
+                            request.header.session_id,
+                            "error",
+                            "task-id-reuse",
+                            msg,
+                        );
+                        resp
+                    }
                     Err(msg) => {
                         warn!(
                             peer = %peer,
