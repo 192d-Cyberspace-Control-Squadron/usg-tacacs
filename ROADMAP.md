@@ -794,9 +794,11 @@ spec:
 
 **Dependency**: Phase 1, Phase 5
 
-### 6.1 Management API with RBAC
+### 6.1 Management API with RBAC ⚙️ (In Progress)
 
 Add REST API to `tacacs-server` for runtime management:
+
+**Status**: Foundation implemented, TLS and full integration pending
 
 | Endpoint                | Method | Permission       | Description              |
 | ----------------------- | ------ | ---------------- | ------------------------ |

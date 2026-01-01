@@ -373,6 +373,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+mod api;
 mod ascii;
 mod auth;
 mod config;

@@ -262,6 +262,31 @@ pub struct Args {
     /// Renewal threshold as percentage of TTL (renew when this % of lifetime has elapsed).
     #[arg(long, default_value_t = 70)]
     pub openbao_pki_renewal_threshold: u8,
+
+    // ==================== Management API Configuration ====================
+    /// Enable the Management API server.
+    #[arg(long, default_value_t = false)]
+    pub api_enabled: bool,
+
+    /// Listen address for the Management API (e.g., 127.0.0.1:8443).
+    #[arg(long)]
+    pub api_listen: Option<SocketAddr>,
+
+    /// TLS certificate for the Management API (PEM).
+    #[arg(long)]
+    pub api_tls_cert: Option<PathBuf>,
+
+    /// TLS private key for the Management API (PEM).
+    #[arg(long)]
+    pub api_tls_key: Option<PathBuf>,
+
+    /// Client CA bundle for Management API mTLS (PEM).
+    #[arg(long)]
+    pub api_client_ca: Option<PathBuf>,
+
+    /// JSON file containing RBAC configuration for the Management API.
+    #[arg(long)]
+    pub api_rbac_config: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Default)]
