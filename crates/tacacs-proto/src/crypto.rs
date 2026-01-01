@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 //! TACACS+ shared-secret body obfuscation (MD5 pad).
 
 use crate::FLAG_UNENCRYPTED;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 //! TACACS+ accounting packet structures plus parsing/encoding helpers.
 
 use crate::header::Header;

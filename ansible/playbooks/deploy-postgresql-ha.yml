@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: Apache-2.0
 # Deploy PostgreSQL HA cluster for policy-ingest service
 # Order: etcd cluster -> Patroni cluster -> PgBouncer
 ---

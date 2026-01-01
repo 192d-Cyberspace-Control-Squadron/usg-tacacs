@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 use crate::config::StaticCreds;
 use argon2::{PasswordHash, PasswordVerifier};
 use ldap3::{LdapConn, LdapConnSettings, Scope, SearchEntry};

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 //! TACACS+ protocol helpers: headers, authn/authz bodies, and shared-secret body crypto.
 //! Focused on async IO parsing/encoding for server-side use.
 //! The `legacy-md5` feature (on by default) enables the TACACS+ MD5 body obfuscation; disable it for FIPS-only builds.

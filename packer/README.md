@@ -116,4 +116,4 @@ The golden image is pre-hardened but requires:
 
 ## License
 
-AGPL-3.0-only
+Apache-2.0

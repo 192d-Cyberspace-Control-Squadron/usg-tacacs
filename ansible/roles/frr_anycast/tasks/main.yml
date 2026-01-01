@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: Apache-2.0
 # frr_anycast - Main tasks for BGP anycast with FRR
 ---
 - name: Validate required variables

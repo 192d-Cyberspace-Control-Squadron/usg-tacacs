@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 //! Shared parsing utilities for TACACS+ packet bodies.
 
 use anyhow::{Context, Result, anyhow};

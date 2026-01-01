@@ -117,4 +117,4 @@ ansible-playbook -i inventory/production playbooks/rotate-certs.yml \
 
 ## License
 
-AGPL-3.0-only
+Apache-2.0

@@ -127,4 +127,4 @@ terraform output -json vm_summary | jq -r 'to_entries | .[] |
 
 ## License
 
-AGPL-3.0-only
+Apache-2.0

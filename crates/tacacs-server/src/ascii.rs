@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-License-Identifier: Apache-2.0
 use crate::auth::{LdapConfig, verify_pap_bytes, verify_pap_bytes_username};
 use openssl::rand::rand_bytes;
 use std::sync::Arc;
