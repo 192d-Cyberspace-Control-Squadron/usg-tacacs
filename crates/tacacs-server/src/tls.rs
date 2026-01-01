@@ -97,8 +97,7 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
 
     fn create_temp_file(content: &str) -> NamedTempFile {
         let mut file = NamedTempFile::new().expect("create temp file");
-        file.write_all(content.as_bytes())
-            .expect("write temp file");
+        file.write_all(content.as_bytes()).expect("write temp file");
         file.flush().expect("flush temp file");
         file
     }

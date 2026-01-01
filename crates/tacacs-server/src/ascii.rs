@@ -577,20 +577,15 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // attempt_limit = 5
 
-        let reply = handle_ascii_continue(
-            b"",
-            b"",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
-        )
-        .await;
+        let reply =
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
-        assert!(reply.server_msg.contains("too many authentication attempts"));
+        assert!(
+            reply
+                .server_msg
+                .contains("too many authentication attempts")
+        );
     }
 
     #[tokio::test]
@@ -602,17 +597,8 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // user_attempt_limit = 3
 
-        let reply = handle_ascii_continue(
-            b"",
-            b"",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
-        )
-        .await;
+        let reply =
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many username attempts"));
@@ -627,17 +613,8 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config(); // pass_attempt_limit = 5
 
-        let reply = handle_ascii_continue(
-            b"",
-            b"",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
-        )
-        .await;
+        let reply =
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_FAIL);
         assert!(reply.server_msg.contains("too many password attempts"));
@@ -654,14 +631,7 @@ mod tests {
         config.lockout_limit = 3;
 
         let reply = handle_ascii_continue(
-            b"",
-            b"newuser",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
+            b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
         )
         .await;
 
@@ -680,14 +650,7 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
-            b"newuser",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
+            b"", b"newuser", 0, &mut state, &policy, &creds, &config, None,
         )
         .await;
 
@@ -709,14 +672,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
-            b"", // Empty username
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
+            b"", b"", // Empty username
+            0, &mut state, &policy, &creds, &config, None,
         )
         .await;
 
@@ -733,14 +690,8 @@ mod tests {
         let config = make_test_config();
 
         let reply = handle_ascii_continue(
-            b"",
-            b"", // Empty password
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
+            b"", b"", // Empty password
+            0, &mut state, &policy, &creds, &config, None,
         )
         .await;
 
@@ -812,17 +763,8 @@ mod tests {
         let creds = make_test_creds();
         let config = make_test_config();
 
-        let reply = handle_ascii_continue(
-            b"",
-            b"",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
-        )
-        .await;
+        let reply =
+            handle_ascii_continue(b"", b"", 0, &mut state, &policy, &creds, &config, None).await;
 
         assert_eq!(reply.status, AUTHEN_STATUS_RESTART);
         assert!(reply.server_msg.contains("restart"));
@@ -918,17 +860,9 @@ mod tests {
         let mut config = make_test_config();
         config.attempt_limit = 0; // Unlimited
 
-        let reply = handle_ascii_continue(
-            b"",
-            b"user",
-            0,
-            &mut state,
-            &policy,
-            &creds,
-            &config,
-            None,
-        )
-        .await;
+        let reply =
+            handle_ascii_continue(b"", b"user", 0, &mut state, &policy, &creds, &config, None)
+                .await;
 
         // Should not fail due to attempt limit
         assert_ne!(reply.status, AUTHEN_STATUS_FAIL);

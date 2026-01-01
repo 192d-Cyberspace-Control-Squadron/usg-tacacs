@@ -52,9 +52,10 @@ impl Metrics {
         let registry = Registry::new();
 
         // Connection metrics
-        let connections_active = Gauge::with_opts(
-            Opts::new("tacacs_connections_active", "Number of active connections"),
-        )
+        let connections_active = Gauge::with_opts(Opts::new(
+            "tacacs_connections_active",
+            "Number of active connections",
+        ))
         .expect("metric can be created");
 
         let connections_total = CounterVec::new(
@@ -87,7 +88,9 @@ impl Metrics {
                 "tacacs_authn_duration_seconds",
                 "Authentication request duration in seconds",
             )
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]),
+            .buckets(vec![
+                0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+            ]),
             &["method"],
         )
         .expect("metric can be created");
@@ -119,13 +122,18 @@ impl Metrics {
         .expect("metric can be created");
 
         // Session metrics
-        let sessions_active =
-            Gauge::with_opts(Opts::new("tacacs_sessions_active", "Number of active sessions"))
-                .expect("metric can be created");
+        let sessions_active = Gauge::with_opts(Opts::new(
+            "tacacs_sessions_active",
+            "Number of active sessions",
+        ))
+        .expect("metric can be created");
 
         // Policy metrics
         let policy_reload_total = CounterVec::new(
-            Opts::new("tacacs_policy_reload_total", "Policy reload attempts by result"),
+            Opts::new(
+                "tacacs_policy_reload_total",
+                "Policy reload attempts by result",
+            ),
             &["result"],
         )
         .expect("metric can be created");
@@ -279,8 +287,12 @@ mod tests {
         let m = metrics();
         // Should be able to increment counters
         m.connections_active.inc();
-        m.connections_total.with_label_values(&["success", "tls"]).inc();
-        m.authn_requests_total.with_label_values(&["pap", "pass"]).inc();
+        m.connections_total
+            .with_label_values(&["success", "tls"])
+            .inc();
+        m.authn_requests_total
+            .with_label_values(&["pap", "pass"])
+            .inc();
 
         // Should be able to encode
         let output = m.encode();

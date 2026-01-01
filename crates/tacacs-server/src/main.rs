@@ -50,10 +50,7 @@ async fn main() -> Result<()> {
             let otel_layer = init_telemetry(&telemetry_config)?;
             tracing_subscriber::registry()
                 .with(otel_layer)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_timer(UtcTime::rfc_3339()),
-                )
+                .with(tracing_subscriber::fmt::layer().with_timer(UtcTime::rfc_3339()))
                 .init();
             info!(otlp_endpoint = %endpoint, "OpenTelemetry tracing enabled");
         }

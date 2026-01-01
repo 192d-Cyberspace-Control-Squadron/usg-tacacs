@@ -78,8 +78,8 @@ mod tests {
             ascii_attempts: 0,
             ascii_user_attempts: 0,
             ascii_pass_attempts: 0,
-            service: Some(1),  // AUTHEN_SVC_LOGIN
-            action: Some(1),   // TAC_PLUS_AUTHEN_LOGIN
+            service: Some(1), // AUTHEN_SVC_LOGIN
+            action: Some(1),  // TAC_PLUS_AUTHEN_LOGIN
         }
     }
 

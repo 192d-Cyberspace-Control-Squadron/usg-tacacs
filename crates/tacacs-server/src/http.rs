@@ -9,8 +9,8 @@ use axum::{
     routing::get,
 };
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
@@ -74,9 +74,7 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 /// Readiness probe - returns 200 if ready to accept connections, 503 otherwise.
-async fn ready_handler(
-    axum::extract::State(state): axum::extract::State<ServerState>,
-) -> Response {
+async fn ready_handler(axum::extract::State(state): axum::extract::State<ServerState>) -> Response {
     if state.is_ready() {
         (
             StatusCode::OK,
@@ -86,16 +84,16 @@ async fn ready_handler(
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
-            axum::Json(HealthResponse { status: "not_ready" }),
+            axum::Json(HealthResponse {
+                status: "not_ready",
+            }),
         )
             .into_response()
     }
 }
 
 /// Liveness probe - returns 200 if not deadlocked, 503 otherwise.
-async fn live_handler(
-    axum::extract::State(state): axum::extract::State<ServerState>,
-) -> Response {
+async fn live_handler(axum::extract::State(state): axum::extract::State<ServerState>) -> Response {
     if state.is_alive() {
         (
             StatusCode::OK,
@@ -162,7 +160,12 @@ mod tests {
         let app = build_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -176,7 +179,12 @@ mod tests {
         let app = build_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -190,7 +198,12 @@ mod tests {
         let app = build_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/ready").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -216,7 +229,12 @@ mod tests {
         let app = build_router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

@@ -37,14 +37,17 @@ impl TelemetryConfig {
 /// Initialize OpenTelemetry with OTLP exporter.
 ///
 /// Returns a tracing layer that can be added to the subscriber.
-pub fn init_telemetry<S>(config: &TelemetryConfig) -> anyhow::Result<OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>>
+pub fn init_telemetry<S>(
+    config: &TelemetryConfig,
+) -> anyhow::Result<OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
 {
     // Build resource attributes
-    let mut resource_attrs = vec![
-        opentelemetry::KeyValue::new("service.name", config.service_name.clone()),
-    ];
+    let mut resource_attrs = vec![opentelemetry::KeyValue::new(
+        "service.name",
+        config.service_name.clone(),
+    )];
 
     if let Some(location) = &config.location {
         resource_attrs.push(opentelemetry::KeyValue::new("location", location.clone()));
