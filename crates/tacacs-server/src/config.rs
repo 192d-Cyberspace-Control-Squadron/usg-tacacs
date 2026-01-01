@@ -202,7 +202,6 @@ pub struct Args {
     pub shutdown_force_timeout_secs: u64,
 
     // ==================== OpenBao Integration ====================
-
     /// Enable OpenBao/Vault integration for secrets management.
     #[arg(long, default_value_t = false)]
     pub openbao_enabled: bool,
@@ -240,7 +239,6 @@ pub struct Args {
     pub openbao_location: Option<String>,
 
     // ==================== OpenBao PKI (Certificate Management) ====================
-
     /// Enable automatic TLS certificate management via OpenBao PKI secrets engine.
     #[arg(long, default_value_t = false)]
     pub openbao_pki_enabled: bool,

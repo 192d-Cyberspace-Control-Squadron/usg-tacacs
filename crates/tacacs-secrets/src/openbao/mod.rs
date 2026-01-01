@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, broadcast};
 use tracing::{debug, info, warn};
 
 /// OpenBao-backed secrets provider.
@@ -100,8 +100,8 @@ impl OpenBaoProvider {
         let ldap_path = format!("{}/ldap-bind", self.config.secret_path);
         match self.client.kv().read(&ldap_path).await {
             Ok(Some(value)) => {
-                let password =
-                    String::from_utf8(value).map_err(|e| anyhow::anyhow!("invalid UTF-8: {}", e))?;
+                let password = String::from_utf8(value)
+                    .map_err(|e| anyhow::anyhow!("invalid UTF-8: {}", e))?;
                 let secret = SecretValue::from_string(password.clone());
                 let mut cache = self.cache.write().await;
                 let changed = cache
@@ -127,7 +127,10 @@ impl OpenBaoProvider {
 
         // Fetch location-specific secret if location is configured
         if let Some(ref location) = self.config.location {
-            let location_path = format!("{}/locations/{}/shared-secret", self.config.secret_path, location);
+            let location_path = format!(
+                "{}/locations/{}/shared-secret",
+                self.config.secret_path, location
+            );
             match self.client.kv().read(&location_path).await {
                 Ok(Some(value)) => {
                     let secret = SecretValue::new(value);
@@ -144,8 +147,16 @@ impl OpenBaoProvider {
             }
 
             // Fetch NAD secrets for this location
-            let nad_path = format!("{}/locations/{}/nad-secrets", self.config.secret_path, location);
-            match self.client.kv().read_json::<HashMap<String, String>>(&nad_path).await {
+            let nad_path = format!(
+                "{}/locations/{}/nad-secrets",
+                self.config.secret_path, location
+            );
+            match self
+                .client
+                .kv()
+                .read_json::<HashMap<String, String>>(&nad_path)
+                .await
+            {
                 Ok(Some(nad_map)) => {
                     let mut cache = self.cache.write().await;
                     for (ip_str, secret_str) in nad_map {
@@ -153,9 +164,8 @@ impl OpenBaoProvider {
                             Ok(ip) => {
                                 let old_secret = cache.nad_secrets.get(&ip);
                                 let new_data = secret_str.as_bytes().to_vec();
-                                let changed = old_secret
-                                    .map(|s| s.data != new_data)
-                                    .unwrap_or(true);
+                                let changed =
+                                    old_secret.map(|s| s.data != new_data).unwrap_or(true);
                                 if changed && notify {
                                     changes.push(SecretChange::NadSecret {
                                         ip,
@@ -253,7 +263,5 @@ impl SecretsProvider for OpenBaoProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Integration tests would go here, using wiremock to mock OpenBao responses
 }

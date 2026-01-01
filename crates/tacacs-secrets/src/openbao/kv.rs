@@ -1,8 +1,8 @@
 //! KV v2 secrets engine client.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use tracing::debug;
 
 /// Client for the KV v2 secrets engine.
@@ -16,6 +16,7 @@ pub struct KvClient {
 
 /// KV v2 secret data wrapper.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct KvData<T> {
     pub data: T,
     pub metadata: KvMetadata,
@@ -23,6 +24,7 @@ pub struct KvData<T> {
 
 /// KV v2 secret metadata.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct KvMetadata {
     pub created_time: String,
     pub deletion_time: String,
@@ -32,6 +34,7 @@ pub struct KvMetadata {
 
 /// Simple string value wrapper for secrets that are just strings.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct StringValue {
     pub value: String,
 }
@@ -95,12 +98,12 @@ impl KvClient {
     /// Parse a KV v2 response and extract the value.
     pub fn parse_string_value(data: &serde_json::Value) -> Result<Option<Vec<u8>>> {
         // KV v2 wraps data in a "data" object
-        if let Some(inner_data) = data.get("data") {
-            if let Some(value) = inner_data.get("value") {
-                if let Some(s) = value.as_str() {
-                    return Ok(Some(s.as_bytes().to_vec()));
-                }
-            }
+        if let Some(inner_data) = data
+            .get("data")
+            .and_then(|d| d.get("value"))
+            .and_then(|v| v.as_str())
+        {
+            return Ok(Some(inner_data.as_bytes().to_vec()));
         }
         Ok(None)
     }
@@ -123,13 +126,19 @@ mod tests {
     #[test]
     fn test_secret_path_with_data() {
         let kv = KvClient::new("secret/data/tacacs".to_string());
-        assert_eq!(kv.secret_path("shared-secret"), "secret/data/tacacs/shared-secret");
+        assert_eq!(
+            kv.secret_path("shared-secret"),
+            "secret/data/tacacs/shared-secret"
+        );
     }
 
     #[test]
     fn test_secret_path_without_data() {
         let kv = KvClient::new("secret/tacacs".to_string());
-        assert_eq!(kv.secret_path("shared-secret"), "secret/data/tacacs/shared-secret");
+        assert_eq!(
+            kv.secret_path("shared-secret"),
+            "secret/data/tacacs/shared-secret"
+        );
     }
 
     #[test]

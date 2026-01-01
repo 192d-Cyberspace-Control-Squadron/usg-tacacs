@@ -3,10 +3,10 @@
 use crate::config::OpenBaoConfig;
 use crate::openbao::{AppRoleAuth, KvClient, PkiClient};
 use anyhow::{Context, Result};
-use backoff::backoff::Backoff;
 use backoff::ExponentialBackoff;
+use backoff::backoff::Backoff;
 use reqwest::{Client, ClientBuilder, StatusCode};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -46,6 +46,7 @@ impl TokenState {
 
 /// Generic OpenBao API response wrapper.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ApiResponse<T> {
     pub data: Option<T>,
     pub warnings: Option<Vec<String>>,
@@ -57,6 +58,7 @@ pub struct ApiResponse<T> {
 
 /// Authentication info from login response.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct AuthInfo {
     pub client_token: String,
     pub accessor: String,
@@ -84,10 +86,7 @@ impl OpenBaoClient {
 
         let http = builder.build().context("failed to build HTTP client")?;
 
-        let auth = AppRoleAuth::new(
-            config.role_id_file.clone(),
-            config.secret_id_file.clone(),
-        );
+        let auth = AppRoleAuth::new(config.role_id_file.clone(), config.secret_id_file.clone());
 
         let kv = KvClient::new(config.secret_path.clone());
 
@@ -139,7 +138,10 @@ impl OpenBaoClient {
             anyhow::bail!("authentication failed: {} - {}", status, text);
         }
 
-        let api_response: ApiResponse<()> = response.json().await.context("failed to parse auth response")?;
+        let api_response: ApiResponse<()> = response
+            .json()
+            .await
+            .context("failed to parse auth response")?;
 
         let auth = api_response
             .auth
@@ -147,9 +149,8 @@ impl OpenBaoClient {
 
         let mut state = self.token.write().await;
         state.token = Some(auth.client_token);
-        state.expires_at = Some(
-            std::time::Instant::now() + Duration::from_secs(auth.lease_duration),
-        );
+        state.expires_at =
+            Some(std::time::Instant::now() + Duration::from_secs(auth.lease_duration));
         state.renewable = auth.renewable;
 
         debug!(
@@ -183,7 +184,8 @@ impl OpenBaoClient {
 
     /// Make an authenticated GET request.
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<Option<T>> {
-        self.request_with_retry(reqwest::Method::GET, path, None::<()>).await
+        self.request_with_retry(reqwest::Method::GET, path, None::<()>)
+            .await
     }
 
     /// Make an authenticated POST request.
@@ -192,7 +194,8 @@ impl OpenBaoClient {
         path: &str,
         body: &B,
     ) -> Result<Option<T>> {
-        self.request_with_retry(reqwest::Method::POST, path, Some(body)).await
+        self.request_with_retry(reqwest::Method::POST, path, Some(body))
+            .await
     }
 
     /// Make a request with automatic retry on transient failures.
@@ -256,7 +259,10 @@ impl OpenBaoClient {
         let token = self.get_token().await?;
         let url = format!("{}/v1/{}", self.address, path.trim_start_matches('/'));
 
-        let mut request = self.http.request(method.clone(), &url).header("X-Vault-Token", &token);
+        let mut request = self
+            .http
+            .request(method.clone(), &url)
+            .header("X-Vault-Token", &token);
 
         if let Some(b) = body {
             request = request.json(b);

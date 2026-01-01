@@ -104,7 +104,8 @@ impl CertificateBundle {
         let remaining = expiration - now;
         let total_lifetime = time::Duration::days(30); // Assume 30-day certs as default
 
-        let elapsed_ratio = 1.0 - (remaining.whole_seconds() as f64 / total_lifetime.whole_seconds() as f64);
+        let elapsed_ratio =
+            1.0 - (remaining.whole_seconds() as f64 / total_lifetime.whole_seconds() as f64);
         elapsed_ratio >= (threshold_percent as f64 / 100.0)
     }
 }

@@ -152,10 +152,7 @@ impl FileProvider {
         let content = std::fs::read(path)
             .map_err(|e| anyhow::anyhow!("failed to read shared secret from {:?}: {}", path, e))?;
         // Trim trailing newlines
-        let secret = content
-            .strip_suffix(b"\n")
-            .unwrap_or(&content)
-            .to_vec();
+        let secret = content.strip_suffix(b"\n").unwrap_or(&content).to_vec();
         self.shared_secret = Some(secret);
         info!(path = ?path, "loaded shared secret from file");
         Ok(self)
@@ -207,7 +204,10 @@ impl SecretsProvider for FileProvider {
     }
 
     async fn get_nad_secret(&self, ip: &IpAddr) -> Result<Option<SecretValue>> {
-        Ok(self.nad_secrets.get(ip).map(|s| SecretValue::new(s.clone())))
+        Ok(self
+            .nad_secrets
+            .get(ip)
+            .map(|s| SecretValue::new(s.clone())))
     }
 
     async fn refresh(&self) -> Result<Vec<SecretChange>> {
