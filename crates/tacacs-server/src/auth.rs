@@ -26,6 +26,7 @@ pub struct LdapConfig {
 }
 
 impl LdapConfig {
+    #[tracing::instrument(skip(self, password), fields(ldap.url = %self.url))]
     pub async fn authenticate(&self, username: &str, password: &str) -> bool {
         let cfg = self.clone();
         let user = username.to_string();
@@ -96,6 +97,7 @@ fn ldap_authenticate_blocking(cfg: LdapConfig, username: &str, password: &str) -
         .is_ok()
 }
 
+#[tracing::instrument(skip(cfg), fields(ldap.url = %cfg.url))]
 pub async fn ldap_fetch_groups(cfg: &Arc<LdapConfig>, username: &str) -> Vec<String> {
     let cfg = cfg.clone();
     let user = username.to_string();
@@ -139,6 +141,7 @@ fn ldap_fetch_groups_blocking(cfg: Arc<LdapConfig>, username: &str) -> Vec<Strin
     Vec::new()
 }
 
+#[tracing::instrument(skip(password, creds))]
 pub fn verify_pap(user: &str, password: &str, creds: &StaticCreds) -> bool {
     if creds
         .plain
@@ -189,6 +192,7 @@ pub fn verify_pap_bytes_username(username: &[u8], password: &[u8], creds: &Stati
             .any(|(u, h)| u.as_bytes() == username && verify_argon_hash(h, password))
 }
 
+#[tracing::instrument(skip(password, creds, ldap), fields(has_ldap = ldap.is_some()))]
 pub async fn verify_password_sources(
     username: Option<&str>,
     password: &[u8],
@@ -199,13 +203,18 @@ pub async fn verify_password_sources(
     if let Some(user) = username
         && verify_pap_bytes(user, password, creds)
     {
+        tracing::debug!("authenticated via static credentials");
         return true;
     }
     // Try LDAP if enabled and username/password are UTF-8.
     if let (Some(user), Some(ldap_cfg)) = (username, ldap)
         && let Ok(pass_str) = std::str::from_utf8(password)
     {
-        return ldap_cfg.authenticate(user, pass_str).await;
+        let result = ldap_cfg.authenticate(user, pass_str).await;
+        if result {
+            tracing::debug!("authenticated via LDAP");
+        }
+        return result;
     }
     false
 }

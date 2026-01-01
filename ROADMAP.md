@@ -30,16 +30,23 @@ Terraform
 | Audit Logging            | Complete | Structured tracing with UTC timestamps   |
 | Rate Limiting            | Complete | Per-IP, per-user, exponential backoff    |
 | Argon2 Password Hashing  | Complete | File-based and inline credentials        |
+| Prometheus Metrics       | Complete | `/metrics` endpoint with auth/authz/acct |
+| Health Endpoints         | Complete | `/health`, `/ready`, `/live` endpoints   |
+| JSON Logging             | Complete | `--log-format json` for ELK/Loki         |
+| OpenTelemetry Tracing    | Complete | `--otlp-endpoint` for distributed traces |
+| Grafana Dashboard        | Complete | Overview dashboard in `dashboards/`      |
 
 ---
 
-## Phase 1: Observability Foundation
+## Phase 1: Observability Foundation ✅ COMPLETE
 
 **Priority**: Critical
 
 **Dependency**: None
 
-### 1.1 Prometheus Metrics Endpoint
+**Status**: All 5 items complete.
+
+### 1.1 Prometheus Metrics Endpoint ✅ COMPLETE
 
 Add `/metrics` HTTP endpoint to `tacacs-server` exposing:
 
@@ -71,9 +78,11 @@ tacacs_policy_reload_total{location="NYC01", result="success|failed"}
 tacacs_policy_rules_count{location="NYC01"}
 ```
 
-**Implementation**: Add `metrics` feature flag, use `prometheus` crate.
+**Implementation**: ~~Add `metrics` feature flag, use `prometheus` crate.~~
 
-### 1.2 Health Check Endpoints
+**Implemented in**: [metrics.rs](crates/tacacs-server/src/metrics.rs) - Prometheus 0.13 crate with global singleton registry.
+
+### 1.2 Health Check Endpoints ✅ COMPLETE
 
 Add HTTP listener (configurable port, default 8080) with endpoints:
 
@@ -84,7 +93,11 @@ Add HTTP listener (configurable port, default 8080) with endpoints:
 | `GET /live`    | Kubernetes liveness | `200` if not deadlocked                |
 | `GET /metrics` | Prometheus scrape  | Metrics in Prometheus format            |
 
-### 1.3 Structured JSON Logging
+**Implemented in**: [http.rs](crates/tacacs-server/src/http.rs) - Axum HTTP server with ServerState for readiness tracking.
+
+**Usage**: `tacacs-server --listen-http 0.0.0.0:8080`
+
+### 1.3 Structured JSON Logging ✅ COMPLETE
 
 Enhance existing tracing output for log aggregation:
 
@@ -105,36 +118,42 @@ Enhance existing tracing output for log aggregation:
 
 **Format toggle**: `--log-format json|text`
 
-### 1.4 OpenTelemetry Tracing
+**Implemented in**: [main.rs](crates/tacacs-server/src/main.rs) - tracing-subscriber with JSON formatter.
 
-Add optional OTLP exporter for distributed tracing:
+**Usage**: `tacacs-server --log-format json`
 
-- Trace authentication flows end-to-end
-- Trace authorization decisions with rule matching
-- Trace LDAP queries with latency breakdown
-- Trace policy reload operations
+### 1.4 OpenTelemetry Tracing ✅ COMPLETE
 
-**Configuration**:
+Added optional OTLP exporter for distributed tracing:
 
-```json
-{
-  "telemetry": {
-    "otlp_endpoint": "http://jaeger:4317",
-    "service_name": "tacacs-server",
-    "location": "NYC01"
-  }
-}
+- ✅ Trace authentication flows end-to-end
+- ✅ Trace authorization decisions with rule matching
+- ✅ Trace LDAP queries with latency breakdown
+- ✅ Trace policy reload operations
+
+**Implemented in**: [telemetry.rs](crates/tacacs-server/src/telemetry.rs) - OpenTelemetry with OTLP exporter.
+
+**Usage**: `tacacs-server --otlp-endpoint http://jaeger:4317 --otel-service-name tacacs-server --location NYC01`
+
+**Configuration** (CLI arguments):
+
+```text
+--otlp-endpoint <URL>      OpenTelemetry OTLP endpoint (e.g., http://jaeger:4317)
+--otel-service-name <NAME> Service name for traces (default: tacacs-server)
+--location <CODE>          Location identifier for resource attributes
 ```
 
-### 1.5 Grafana Dashboards
+### 1.5 Grafana Dashboards ✅ COMPLETE
 
-Create dashboard JSON files for import:
+Created dashboard JSON files for import:
 
 - **Overview Dashboard**: Connection rate, auth success rate, active sessions
 - **Authentication Dashboard**: Methods breakdown, failure reasons, LDAP latency
 - **Authorization Dashboard**: Allow/deny ratio, top matched rules, reload status
-- **Per-Location Dashboard**: Drilldown by location code
-- **Alerting Rules**: High failure rate, LDAP timeout, connection exhaustion
+- **Per-Location Dashboard**: Drilldown by location code (future)
+- **Alerting Rules**: High failure rate, LDAP timeout, connection exhaustion (future)
+
+**Implemented**: [dashboards/tacacs-overview.json](dashboards/tacacs-overview.json) - Overview dashboard with 7 panels covering connections, authentication, authorization, accounting, sessions, latency, and policy metrics.
 
 ---
 
@@ -868,15 +887,15 @@ Document per-location sizing:
 
 ## Implementation Priority Matrix
 
-| Phase            | Priority | Effort | Dependencies | Business Value           |
-| ---------------- | -------- | ------ | ------------ | ------------------------ |
-| 1. Observability | Critical | Medium | None         | Visibility into 184 sites |
-| 2. IaC           | High     | High   | Phase 1      | Consistent deployments   |
-| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime             |
-| 4. Secrets       | High     | Medium | Phase 2      | Security compliance      |
-| 5. GitOps        | High     | Medium | Phase 2, 4   | Centralized management   |
-| 6. Enterprise    | Medium   | Medium | Phase 1, 5   | Audit/compliance         |
-| 7. Operations    | Medium   | Low    | All          | Operational excellence   |
+| Phase            | Priority | Effort | Dependencies | Business Value            | Status      |
+| ---------------- | -------- | ------ | ------------ | ------------------------- | ----------- |
+| 1. Observability | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
+| 2. IaC           | High     | High   | Phase 1      | Consistent deployments    | 🔜 Next     |
+| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | Pending     |
+| 4. Secrets       | High     | Medium | Phase 2      | Security compliance       | Pending     |
+| 5. GitOps        | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
+| 6. Enterprise    | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
+| 7. Operations    | Medium   | Low    | All          | Operational excellence    | Pending     |
 
 ---
 
@@ -884,10 +903,10 @@ Document per-location sizing:
 
 These items provide immediate value with minimal effort:
 
-1. **Health endpoints** - Enable HAProxy/keepalived health checks
-2. **JSON logging** - Immediate compatibility with ELK/Loki
+1. ~~**Health endpoints** - Enable HAProxy/keepalived health checks~~ ✅ DONE
+2. ~~**JSON logging** - Immediate compatibility with ELK/Loki~~ ✅ DONE
 3. **systemd hardening** - Copy-paste security improvements
-4. **Basic Prometheus metrics** - Connection count, auth rate
+4. ~~**Basic Prometheus metrics** - Connection count, auth rate~~ ✅ DONE
 5. **Ansible role skeleton** - Standardize deployments
 
 ---
@@ -907,8 +926,10 @@ These items provide immediate value with minimal effort:
 
 ## Next Steps
 
-1. Begin Phase 1.1 (Prometheus metrics) - highest impact
-2. Create Ansible role skeleton for standardization
-3. Set up GitOps repository structure
-4. Deploy Grafana dashboards for existing tracing logs
+1. ~~Begin Phase 1.1 (Prometheus metrics) - highest impact~~ ✅ DONE
+2. Create Ansible role skeleton for standardization (Phase 2.1)
+3. Set up GitOps repository structure (Phase 5.1)
+4. ~~Deploy Grafana dashboards for existing tracing logs~~ ✅ DONE
 5. Document current state baseline for all 184 locations
+6. Implement systemd hardening template (Phase 2.3)
+7. ~~Add OpenTelemetry tracing (Phase 1.4)~~ ✅ DONE

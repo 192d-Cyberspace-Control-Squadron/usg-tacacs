@@ -28,6 +28,12 @@ axum.workspace = true
 # Prometheus metrics
 prometheus = "0.13"
 
+# OpenTelemetry tracing
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+
 [dev-dependencies]
 tempfile = "3.14"
 tower = "0.5"

@@ -5,6 +5,7 @@ use crate::metrics::metrics;
 use crate::server::{
     ConnLimiter, serve_legacy, serve_tls, tls_acceptor, validate_policy, watch_sighup,
 };
+use crate::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::sync::Arc;
@@ -12,6 +13,8 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use usg_tacacs_policy::PolicyEngine;
 use usg_tacacs_proto::MIN_SECRET_LEN;
 
@@ -19,22 +22,59 @@ use usg_tacacs_proto::MIN_SECRET_LEN;
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    // Initialize tracing with the configured log format
-    match args.log_format {
-        LogFormat::Text => {
-            let subscriber = tracing_subscriber::fmt()
+    // Initialize tracing with the configured log format and optional OpenTelemetry
+    let otel_enabled = args.otlp_endpoint.is_some();
+
+    match (&args.log_format, &args.otlp_endpoint) {
+        (LogFormat::Text, None) => {
+            tracing_subscriber::fmt()
                 .with_timer(UtcTime::rfc_3339())
-                .finish();
-            tracing::subscriber::set_global_default(subscriber)?;
+                .finish()
+                .init();
         }
-        LogFormat::Json => {
-            let subscriber = tracing_subscriber::fmt()
+        (LogFormat::Json, None) => {
+            tracing_subscriber::fmt()
                 .with_timer(UtcTime::rfc_3339())
                 .json()
                 .flatten_event(true)
                 .with_current_span(true)
-                .finish();
-            tracing::subscriber::set_global_default(subscriber)?;
+                .finish()
+                .init();
+        }
+        (LogFormat::Text, Some(endpoint)) => {
+            let telemetry_config = TelemetryConfig::new(
+                endpoint.clone(),
+                args.otel_service_name.clone(),
+                args.location.clone(),
+            );
+            let otel_layer = init_telemetry(&telemetry_config)?;
+            tracing_subscriber::registry()
+                .with(otel_layer)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_timer(UtcTime::rfc_3339()),
+                )
+                .init();
+            info!(otlp_endpoint = %endpoint, "OpenTelemetry tracing enabled");
+        }
+        (LogFormat::Json, Some(endpoint)) => {
+            let telemetry_config = TelemetryConfig::new(
+                endpoint.clone(),
+                args.otel_service_name.clone(),
+                args.location.clone(),
+            );
+            let otel_layer = init_telemetry(&telemetry_config)?;
+            tracing_subscriber::registry()
+                .with(otel_layer)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_timer(UtcTime::rfc_3339())
+                        .json()
+                        .flatten_event(true)
+                        .with_current_span(true),
+                )
+                .init();
+            info!(otlp_endpoint = %endpoint, "OpenTelemetry tracing enabled");
         }
     }
 
@@ -287,6 +327,11 @@ async fn main() -> Result<()> {
         let _ = handle.await;
     }
 
+    // Shutdown OpenTelemetry gracefully to flush pending traces
+    if otel_enabled {
+        shutdown_telemetry();
+    }
+
     Ok(())
 }
 
@@ -298,4 +343,5 @@ mod metrics;
 mod policy;
 mod server;
 mod session;
+mod telemetry;
 mod tls;

@@ -180,6 +180,14 @@ pub struct Args {
     /// Legacy TACACS+ per-NAD secrets (IP:SECRET). When set, only listed NADs may use legacy TACACS+.
     #[arg(long, value_parser = parse_nad_secret, value_name = "IP:SECRET", num_args = 0..)]
     pub legacy_nad_secret: Vec<(IpAddr, String)>,
+
+    /// OpenTelemetry OTLP endpoint URL (e.g., http://jaeger:4317). Enables distributed tracing.
+    #[arg(long)]
+    pub otlp_endpoint: Option<String>,
+
+    /// Service name for OpenTelemetry traces (default: tacacs-server).
+    #[arg(long, default_value = "tacacs-server")]
+    pub otel_service_name: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -543,6 +551,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);
@@ -599,6 +609,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);
@@ -653,6 +665,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);
@@ -707,6 +721,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);
@@ -762,6 +778,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);
@@ -816,6 +834,8 @@ mod tests {
             ldap_required_group: Vec::new(),
             ldap_group_attr: "memberOf".into(),
             legacy_nad_secret: Vec::new(),
+            otlp_endpoint: None,
+            otel_service_name: "tacacs-server".into(),
         };
 
         let result = credentials_map(&args);

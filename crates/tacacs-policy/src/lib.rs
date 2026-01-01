@@ -206,10 +206,12 @@ impl PolicyEngine {
         })
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn authorize(&self, user: &str, command: &str) -> Decision {
         self.authorize_with_groups(user, &[], command)
     }
 
+    #[tracing::instrument(skip(self), fields(rule_count = self.rules.len()))]
     pub fn authorize_with_groups(&self, user: &str, groups: &[String], command: &str) -> Decision {
         let normalized_user = user.to_lowercase();
         let normalized_groups: Vec<String> = groups.iter().map(|g| g.to_lowercase()).collect();
@@ -246,10 +248,18 @@ impl PolicyEngine {
             .map(|r| r.effect == Effect::Allow)
             .unwrap_or(self.default_allow);
 
-        Decision {
+        let decision = Decision {
             allowed,
             matched_rule: selected.map(|r| r.id.clone()),
-        }
+        };
+
+        tracing::debug!(
+            allowed = decision.allowed,
+            matched_rule = ?decision.matched_rule,
+            "authorization decision"
+        );
+
+        decision
     }
 
     pub fn shell_attributes_for(&self, user: &str) -> Option<Vec<String>> {
