@@ -220,10 +220,10 @@ mod tests {
     async fn header_read_exact_bytes() {
         // Manually construct a valid 12-byte header
         let bytes: [u8; 12] = [
-            0xC1,                   // version (major 12, minor 1)
-            0x01,                   // packet_type (authen)
-            0x05,                   // seq_no
-            0x04,                   // flags (single-connect)
+            0xC1, // version (major 12, minor 1)
+            0x01, // packet_type (authen)
+            0x05, // seq_no
+            0x04, // flags (single-connect)
             0x12, 0x34, 0x56, 0x78, // session_id (big-endian)
             0x00, 0x00, 0x01, 0x00, // length = 256 (big-endian)
         ];

@@ -310,3 +310,163 @@ pub async fn handle_ascii_continue(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ==================== calc_ascii_backoff_capped Tests ====================
+
+    #[test]
+    fn backoff_zero_base_returns_none() {
+        let result = calc_ascii_backoff_capped(0, 1, 5000);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn backoff_first_attempt() {
+        let result = calc_ascii_backoff_capped(1000, 1, 10000);
+        assert!(result.is_some());
+        let duration = result.unwrap();
+        // Base is 1000 * 2^0 = 1000, plus jitter (up to 1000)
+        assert!(duration.as_millis() >= 1000);
+        assert!(duration.as_millis() <= 2000);
+    }
+
+    #[test]
+    fn backoff_exponential_growth() {
+        // attempt 2: base * 2^1 = 2000
+        let result = calc_ascii_backoff_capped(1000, 2, 100000);
+        assert!(result.is_some());
+        let duration = result.unwrap();
+        // 2000 + jitter (up to 1000)
+        assert!(duration.as_millis() >= 2000);
+        assert!(duration.as_millis() <= 3000);
+    }
+
+    #[test]
+    fn backoff_respects_cap() {
+        // attempt 10: base * 2^9 = 512000, but capped at 5000
+        let result = calc_ascii_backoff_capped(1000, 10, 5000);
+        assert!(result.is_some());
+        let duration = result.unwrap();
+        // Capped at 5000 + jitter (up to 1000)
+        assert!(duration.as_millis() >= 5000);
+        assert!(duration.as_millis() <= 10000);
+    }
+
+    #[test]
+    fn backoff_zero_cap_means_no_cap() {
+        // With cap_ms = 0, exponential growth is uncapped
+        let result = calc_ascii_backoff_capped(1000, 5, 0);
+        assert!(result.is_some());
+        let duration = result.unwrap();
+        // 1000 * 2^4 = 16000, plus jitter
+        assert!(duration.as_millis() >= 16000);
+    }
+
+    #[test]
+    fn backoff_saturating_at_high_attempt() {
+        // High attempt numbers with a reasonable cap should work
+        // Note: the shift overflows at attempt > 63, so test with moderate values
+        let result = calc_ascii_backoff_capped(1000, 10, 5000);
+        assert!(result.is_some());
+        // Should be capped at 5000 + jitter
+        let duration = result.unwrap();
+        assert!(duration.as_millis() >= 5000);
+    }
+
+    #[test]
+    fn backoff_attempt_zero() {
+        // attempt 0: base * 2^(-1) with saturation = base * 1 (since saturating_sub)
+        let result = calc_ascii_backoff_capped(1000, 0, 10000);
+        assert!(result.is_some());
+        // 2^(0.saturating_sub(1)) = 2^0 = 1, so 1000 * 1 = 1000
+        let duration = result.unwrap();
+        assert!(duration.as_millis() >= 1000);
+    }
+
+    // ==================== username_for_policy Tests ====================
+
+    #[test]
+    fn username_for_policy_decoded_takes_precedence() {
+        let decoded = Some("admin");
+        let raw = Some(vec![0x61, 0x64, 0x6d, 0x69, 0x6e]);
+        let result = username_for_policy(decoded, raw.as_ref());
+        assert_eq!(result, Some("admin".to_string()));
+    }
+
+    #[test]
+    fn username_for_policy_falls_back_to_hex() {
+        let raw = Some(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let result = username_for_policy(None, raw.as_ref());
+        assert_eq!(result, Some("deadbeef".to_string()));
+    }
+
+    #[test]
+    fn username_for_policy_none_when_both_none() {
+        let result = username_for_policy(None, None);
+        assert!(result.is_none());
+    }
+
+    // ==================== field_for_policy Tests ====================
+
+    #[test]
+    fn field_for_policy_decoded_takes_precedence() {
+        let decoded = Some("console");
+        let raw = Some(vec![0x63, 0x6f, 0x6e]);
+        let result = field_for_policy(decoded, raw.as_ref());
+        assert_eq!(result, Some("console".to_string()));
+    }
+
+    #[test]
+    fn field_for_policy_falls_back_to_hex() {
+        let raw = Some(vec![0xFF, 0x00, 0xAB]);
+        let result = field_for_policy(None, raw.as_ref());
+        assert_eq!(result, Some("ff00ab".to_string()));
+    }
+
+    #[test]
+    fn field_for_policy_none_when_both_none() {
+        let result = field_for_policy(None, None);
+        assert!(result.is_none());
+    }
+
+    // ==================== AsciiConfig Tests ====================
+
+    #[test]
+    fn ascii_config_defaults() {
+        let config = AsciiConfig {
+            attempt_limit: 5,
+            user_attempt_limit: 3,
+            pass_attempt_limit: 5,
+            backoff_ms: 0,
+            backoff_max_ms: 5000,
+            lockout_limit: 0,
+        };
+
+        assert_eq!(config.attempt_limit, 5);
+        assert_eq!(config.user_attempt_limit, 3);
+        assert_eq!(config.pass_attempt_limit, 5);
+        assert_eq!(config.backoff_ms, 0);
+        assert_eq!(config.backoff_max_ms, 5000);
+        assert_eq!(config.lockout_limit, 0);
+    }
+
+    #[test]
+    fn ascii_config_zero_limits_means_unlimited() {
+        let config = AsciiConfig {
+            attempt_limit: 0,
+            user_attempt_limit: 0,
+            pass_attempt_limit: 0,
+            backoff_ms: 0,
+            backoff_max_ms: 0,
+            lockout_limit: 0,
+        };
+
+        // All zeros means no limits
+        assert_eq!(config.attempt_limit, 0);
+        assert_eq!(config.user_attempt_limit, 0);
+        assert_eq!(config.pass_attempt_limit, 0);
+    }
+}

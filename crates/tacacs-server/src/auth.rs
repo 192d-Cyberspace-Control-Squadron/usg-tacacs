@@ -289,3 +289,422 @@ pub fn handle_chap_continue(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use usg_tacacs_proto::Header;
+
+    fn make_creds() -> StaticCreds {
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("admin".into(), "secret123".into());
+        creds.plain.insert("user".into(), "password".into());
+        creds
+    }
+
+    fn make_argon_creds() -> StaticCreds {
+        let mut creds = StaticCreds::default();
+        // Valid argon2id hash for password "test123"
+        creds.argon.insert(
+            "hashed_user".into(),
+            "$argon2id$v=19$m=19456,t=2,p=1$bXlzYWx0MTIzNDU2Nzg$lT9bGlM5c7M8vbdNjLy3sA".into(),
+        );
+        creds
+    }
+
+    fn make_test_header() -> Header {
+        Header {
+            version: 0xC0,
+            packet_type: 0x01,
+            seq_no: 1,
+            flags: 0,
+            session_id: 12345,
+            length: 0,
+        }
+    }
+
+    fn make_test_session_state() -> AuthSessionState {
+        let header = make_test_header();
+        AuthSessionState::new_from_start(
+            &header,
+            0x01, // PAP
+            "testuser".into(),
+            b"testuser".to_vec(),
+            "console".into(),
+            b"console".to_vec(),
+            "192.168.1.1".into(),
+            b"192.168.1.1".to_vec(),
+            0x01, // service
+            0x01, // action
+        )
+        .unwrap()
+    }
+
+    // ==================== verify_pap Tests ====================
+
+    #[test]
+    fn verify_pap_valid_plain() {
+        let creds = make_creds();
+        assert!(verify_pap("admin", "secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_invalid_password() {
+        let creds = make_creds();
+        assert!(!verify_pap("admin", "wrongpassword", &creds));
+    }
+
+    #[test]
+    fn verify_pap_unknown_user() {
+        let creds = make_creds();
+        assert!(!verify_pap("unknown", "secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_empty_password() {
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("emptypass".into(), "".into());
+        assert!(verify_pap("emptypass", "", &creds));
+    }
+
+    #[test]
+    fn verify_pap_case_sensitive() {
+        let creds = make_creds();
+        assert!(!verify_pap("ADMIN", "secret123", &creds));
+        assert!(!verify_pap("admin", "SECRET123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_argon_invalid_hash() {
+        // Invalid argon2 hash format should return false
+        let mut creds = StaticCreds::default();
+        creds.argon.insert("user".into(), "not-a-valid-hash".into());
+        assert!(!verify_pap("user", "anypassword", &creds));
+    }
+
+    // ==================== verify_pap_bytes Tests ====================
+
+    #[test]
+    fn verify_pap_bytes_valid() {
+        let creds = make_creds();
+        assert!(verify_pap_bytes("admin", b"secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_invalid() {
+        let creds = make_creds();
+        assert!(!verify_pap_bytes("admin", b"wrong", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_with_null() {
+        let mut creds = StaticCreds::default();
+        // Password with embedded null byte
+        creds.plain.insert("user".into(), "pass\0word".into());
+        assert!(verify_pap_bytes("user", b"pass\0word", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_binary() {
+        let mut creds = StaticCreds::default();
+        // Use String::from_utf8_lossy for binary data
+        let binary_pass = String::from_utf8_lossy(&[0x7f, 0x00, 0x7e]).to_string();
+        creds.plain.insert("user".into(), binary_pass.clone());
+        assert!(verify_pap_bytes("user", binary_pass.as_bytes(), &creds));
+    }
+
+    // ==================== verify_pap_bytes_username Tests ====================
+
+    #[test]
+    fn verify_pap_bytes_username_valid() {
+        let creds = make_creds();
+        assert!(verify_pap_bytes_username(b"admin", b"secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_username_invalid() {
+        let creds = make_creds();
+        assert!(!verify_pap_bytes_username(b"admin", b"wrong", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_username_unknown() {
+        let creds = make_creds();
+        assert!(!verify_pap_bytes_username(b"unknown", b"secret123", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_username_binary() {
+        let mut creds = StaticCreds::default();
+        // Use valid ASCII characters for username
+        let binary_user = String::from_utf8_lossy(&[0x7f, 0x7e]).to_string();
+        creds.plain.insert(binary_user.clone(), "pass".into());
+        assert!(verify_pap_bytes_username(
+            binary_user.as_bytes(),
+            b"pass",
+            &creds
+        ));
+    }
+
+    // ==================== compute_chap_response Tests ====================
+
+    #[test]
+    fn compute_chap_response_valid() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "secret".into());
+
+        // Construct valid CHAP data: 1 byte ID + 16 bytes response
+        let chap_id = 0x42u8;
+        let challenge = [0x11u8; 16];
+
+        // Compute expected MD5(id || password || challenge)
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(b"secret");
+        buf.extend_from_slice(&challenge);
+        let expected_digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut continue_data = vec![chap_id];
+        continue_data.extend_from_slice(expected_digest.as_ref());
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn compute_chap_response_invalid() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "secret".into());
+
+        let challenge = [0x11u8; 16];
+        // Wrong response
+        let mut continue_data = vec![0x42];
+        continue_data.extend_from_slice(&[0u8; 16]); // All zeros = wrong
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert_eq!(result, Some(false));
+    }
+
+    #[test]
+    fn compute_chap_response_unknown_user() {
+        let creds = HashMap::new();
+        let challenge = [0x11u8; 16];
+        let mut continue_data = vec![0x42];
+        continue_data.extend_from_slice(&[0u8; 16]);
+
+        let result = compute_chap_response("unknown", &creds, &continue_data, &challenge);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn compute_chap_response_wrong_length() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "secret".into());
+
+        let challenge = [0x11u8; 16];
+        let continue_data = vec![0x42, 0x00, 0x00]; // Too short
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn compute_chap_response_wrong_challenge_length() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "secret".into());
+
+        let challenge = [0x11u8; 8]; // Wrong length
+        let mut continue_data = vec![0x42];
+        continue_data.extend_from_slice(&[0u8; 16]);
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert!(result.is_none());
+    }
+
+    // ==================== handle_chap_continue Tests ====================
+
+    #[test]
+    fn handle_chap_continue_invalid_length() {
+        let mut state = make_test_session_state();
+        let creds = make_creds();
+
+        let result = handle_chap_continue("admin", &[0x42, 0x00, 0x00], &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_ERROR);
+        assert!(result.server_msg.contains("length"));
+    }
+
+    #[test]
+    fn handle_chap_continue_id_mismatch() {
+        let mut state = make_test_session_state();
+        state.chap_id = Some(0x42);
+        state.challenge = Some(vec![0x11; 16]);
+        let creds = make_creds();
+
+        let mut cont_data = vec![0x99]; // Wrong ID
+        cont_data.extend_from_slice(&[0u8; 16]);
+
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_FAIL);
+        assert!(result.server_msg.contains("mismatch"));
+    }
+
+    #[test]
+    fn handle_chap_continue_missing_credentials() {
+        let mut state = make_test_session_state();
+        state.challenge = Some(vec![0x11; 16]);
+        let creds = StaticCreds::default();
+
+        let mut cont_data = vec![0x42];
+        cont_data.extend_from_slice(&[0u8; 16]);
+
+        let result = handle_chap_continue("unknown", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_ERROR);
+        assert!(result.server_msg.contains("credentials"));
+    }
+
+    #[test]
+    fn handle_chap_continue_invalid_response() {
+        let mut state = make_test_session_state();
+        state.challenge = Some(vec![0x11; 16]);
+        let creds = make_creds();
+
+        let mut cont_data = vec![0x42];
+        cont_data.extend_from_slice(&[0u8; 16]); // Wrong hash
+
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_FAIL);
+        assert!(result.server_msg.contains("invalid CHAP response"));
+    }
+
+    #[test]
+    fn handle_chap_continue_valid() {
+        let mut state = make_test_session_state();
+        let challenge = vec![0x11u8; 16];
+        state.challenge = Some(challenge.clone());
+        let chap_id = 0x42u8;
+        state.chap_id = Some(chap_id);
+
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("admin".into(), "secret".into());
+
+        // Compute correct response
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(b"secret");
+        buf.extend_from_slice(&challenge);
+        let digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut cont_data = vec![chap_id];
+        cont_data.extend_from_slice(digest.as_ref());
+
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_PASS);
+        assert!(state.challenge.is_none());
+        assert!(state.chap_id.is_none());
+    }
+
+    // ==================== LdapConfig Tests ====================
+
+    #[test]
+    fn ldap_config_clone() {
+        let config = LdapConfig {
+            url: "ldaps://example.com".into(),
+            bind_dn: "cn=admin,dc=example,dc=com".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example,dc=com".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: Some(PathBuf::from("/etc/ssl/certs/ca.pem")),
+            required_group: vec!["cn=admins,dc=example,dc=com".into()],
+            group_attr: "memberOf".into(),
+        };
+
+        let cloned = config.clone();
+        assert_eq!(cloned.url, config.url);
+        assert_eq!(cloned.bind_dn, config.bind_dn);
+        assert_eq!(cloned.bind_password, config.bind_password);
+        assert_eq!(cloned.search_base, config.search_base);
+        assert_eq!(cloned.username_attr, config.username_attr);
+        assert_eq!(cloned.timeout, config.timeout);
+        assert_eq!(cloned.ca_file, config.ca_file);
+        assert_eq!(cloned.required_group, config.required_group);
+        assert_eq!(cloned.group_attr, config.group_attr);
+    }
+
+    #[test]
+    fn ldap_config_debug() {
+        let config = LdapConfig {
+            url: "ldaps://example.com".into(),
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        };
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("LdapConfig"));
+        assert!(debug_str.contains("ldaps://example.com"));
+    }
+
+    // ==================== ldap_authenticate_blocking Tests ====================
+
+    #[test]
+    fn ldap_authenticate_blocking_non_ldaps_fails() {
+        let config = LdapConfig {
+            url: "ldap://example.com".into(), // Not LDAPS
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        };
+
+        let result = ldap_authenticate_blocking(config, "user", "pass");
+        assert!(!result); // Should fail because not LDAPS
+    }
+
+    #[test]
+    fn ldap_authenticate_blocking_http_url_fails() {
+        let config = LdapConfig {
+            url: "http://example.com".into(), // Not LDAPS
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        };
+
+        let result = ldap_authenticate_blocking(config, "user", "pass");
+        assert!(!result);
+    }
+
+    // ==================== ldap_fetch_groups_blocking Tests ====================
+
+    #[test]
+    fn ldap_fetch_groups_blocking_non_ldaps_returns_empty() {
+        let config = Arc::new(LdapConfig {
+            url: "ldap://example.com".into(), // Not LDAPS
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        });
+
+        let result = ldap_fetch_groups_blocking(config, "user");
+        assert!(result.is_empty());
+    }
+}
