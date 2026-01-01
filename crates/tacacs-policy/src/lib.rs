@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use hex;
-use jsonschema::{Draft, JSONSchema};
+use jsonschema::Draft;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::Value;
@@ -435,14 +435,13 @@ fn validate_against_schema(value: &Value, schema_path: &Path) -> Result<()> {
         .with_context(|| format!("reading schema {}", schema_path.display()))?;
     let schema_json: Value = serde_json::from_str(&schema_contents)
         .with_context(|| format!("parsing JSON schema {}", schema_path.display()))?;
-    let compiled = JSONSchema::options()
+    let compiled = jsonschema::options()
         .with_draft(Draft::Draft202012)
-        .compile(&schema_json)
+        .build(&schema_json)
         .map_err(|err| anyhow!("compiling schema {}: {err}", schema_path.display()))?;
 
-    compiled.validate(value).map_err(|errors| {
-        let messages: Vec<String> = errors.map(|e| e.to_string()).collect();
-        anyhow!("policy failed schema validation: {}", messages.join("; "))
+    compiled.validate(value).map_err(|err| {
+        anyhow!("policy failed schema validation: {}", err)
     })
 }
 

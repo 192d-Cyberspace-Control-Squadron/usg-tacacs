@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use anyhow::{Context, Result};
-use jsonschema::{Draft, JSONSchema};
+use jsonschema::{Draft, Validator};
 use serde_json::Value;
 
 pub struct SchemaSet {
-    config: JSONSchema,
-    policy: JSONSchema,
+    config: Validator,
+    policy: Validator,
 }
 
 impl SchemaSet {
@@ -18,36 +18,30 @@ impl SchemaSet {
         let policy_json: Value = serde_json::from_slice(&policy_bytes)
             .with_context(|| format!("parse policy schema {policy_path}"))?;
 
-        // jsonschema 0.18 requires schema lifetimes to be 'static; leak in-process copies.
-        let config_static: &'static Value = Box::leak(Box::new(config_json));
-        let policy_static: &'static Value = Box::leak(Box::new(policy_json));
-
         // Config and policy schemas use draft-07
-        let config = JSONSchema::options()
+        let config = jsonschema::options()
             .with_draft(Draft::Draft7)
-            .compile(config_static)
+            .build(&config_json)
             .context("compile config schema")?;
 
-        let policy = JSONSchema::options()
+        let policy = jsonschema::options()
             .with_draft(Draft::Draft7)
-            .compile(policy_static)
+            .build(&policy_json)
             .context("compile policy schema")?;
 
         Ok(Self { config, policy })
     }
 
     pub fn validate_config(&self, instance: &Value) -> Result<()> {
-        if let Err(errors) = self.config.validate(instance) {
-            let msgs: Vec<String> = errors.map(|e| e.to_string()).collect();
-            anyhow::bail!("config schema validation failed: {}", msgs.join("; "));
+        if let Err(err) = self.config.validate(instance) {
+            anyhow::bail!("config schema validation failed: {}", err);
         }
         Ok(())
     }
 
     pub fn validate_policy(&self, instance: &Value) -> Result<()> {
-        if let Err(errors) = self.policy.validate(instance) {
-            let msgs: Vec<String> = errors.map(|e| e.to_string()).collect();
-            anyhow::bail!("policy schema validation failed: {}", msgs.join("; "));
+        if let Err(err) = self.policy.validate(instance) {
+            anyhow::bail!("policy schema validation failed: {}", err);
         }
         Ok(())
     }

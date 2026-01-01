@@ -1,25 +1,21 @@
 [package]
 name = "usg-tacacs-server"
-version = "0.76.0"
-edition = "2024"
-license = "AGPL-3.0-only"
-license-file = "LICENSE"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt", "time"] }
-clap = { version = "4", features = ["derive"] }
-tokio-rustls = "0.26"
-rustls = "0.22"
-rustls-pemfile = "2"
-usg-tacacs-policy = { path = "../tacacs-policy" }
-usg-tacacs-proto = { path = "../tacacs-proto" }
-openssl = "0.10"
-hex = "0.4"
-ldap3 = { version = "0.11", default-features = false, features = [
-    "tls-native",
-    "sync",
-] }
-argon2 = "0.5"
+tokio = { workspace = true, features = ["full"] }
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt", "time"] }
+clap.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+usg-tacacs-policy.workspace = true
+usg-tacacs-proto.workspace = true
+openssl.workspace = true
+hex.workspace = true
+ldap3.workspace = true
+argon2.workspace = true
