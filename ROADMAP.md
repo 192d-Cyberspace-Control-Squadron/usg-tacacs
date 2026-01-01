@@ -157,13 +157,15 @@ Created dashboard JSON files for import:
 
 ---
 
-## Phase 2: Infrastructure as Code
+## Phase 2: Infrastructure as Code ✅ COMPLETE
 
 **Priority**: High
 
 **Dependency**: Phase 1 (health endpoints for Ansible checks)
 
-### 2.1 Ansible Roles
+**Status**: All 4 items complete.
+
+### 2.1 Ansible Roles ✅ COMPLETE
 
 Create `ansible/` directory with roles:
 
@@ -213,7 +215,9 @@ ansible/
 - Health check validation post-deploy
 - Graceful restart with connection draining
 
-### 2.2 Terraform Modules
+**Implemented in**: [ansible/](ansible/) - Three roles (tacacs_server, tacacs_ha, tacacs_common) with playbooks for deploy, upgrade, rollback, and certificate rotation.
+
+### 2.2 Terraform Modules ✅ COMPLETE
 
 Create `terraform/` directory:
 
@@ -247,7 +251,9 @@ terraform/
 - DNS record management
 - Load balancer configuration
 
-### 2.3 systemd Hardening
+**Implemented in**: [terraform/](terraform/) - Three modules (tacacs-vm, tacacs-network, tacacs-dns) with multi-provider support and automatic Ansible inventory generation.
+
+### 2.3 systemd Hardening ✅ COMPLETE
 
 Enhanced service unit template:
 
@@ -301,7 +307,9 @@ SyslogIdentifier=tacacs-server
 WantedBy=multi-user.target
 ```
 
-### 2.4 Packer Golden Images
+**Implemented in**: [ansible/roles/tacacs_server/templates/tacacs-server.service.j2](ansible/roles/tacacs_server/templates/tacacs-server.service.j2) and [packer/files/tacacs-server.service](packer/files/tacacs-server.service) - Hardened systemd unit with NoNewPrivileges, ProtectSystem=strict, SystemCallFilter, and resource limits.
+
+### 2.4 Packer Golden Images ✅ COMPLETE
 
 Create `packer/` directory for VM templates:
 
@@ -315,6 +323,8 @@ packer/
 └── files/
     └── tacacs-server.service
 ```
+
+**Implemented in**: [packer/](packer/) - HCL template with multi-provider support (QEMU, vSphere, AWS), security hardening scripts, and pre-installed TACACS+ binary.
 
 ---
 
@@ -890,8 +900,8 @@ Document per-location sizing:
 | Phase            | Priority | Effort | Dependencies | Business Value            | Status      |
 | ---------------- | -------- | ------ | ------------ | ------------------------- | ----------- |
 | 1. Observability | Critical | Medium | None         | Visibility into 184 sites | ✅ Complete |
-| 2. IaC           | High     | High   | Phase 1      | Consistent deployments    | 🔜 Next     |
-| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | Pending     |
+| 2. IaC           | High     | High   | Phase 1      | Consistent deployments    | ✅ Complete |
+| 3. HA            | High     | High   | Phase 1, 2   | 99.9% uptime              | 🔜 Next     |
 | 4. Secrets       | High     | Medium | Phase 2      | Security compliance       | Pending     |
 | 5. GitOps        | High     | Medium | Phase 2, 4   | Centralized management    | Pending     |
 | 6. Enterprise    | Medium   | Medium | Phase 1, 5   | Audit/compliance          | Pending     |
@@ -905,9 +915,9 @@ These items provide immediate value with minimal effort:
 
 1. ~~**Health endpoints** - Enable HAProxy/keepalived health checks~~ ✅ DONE
 2. ~~**JSON logging** - Immediate compatibility with ELK/Loki~~ ✅ DONE
-3. **systemd hardening** - Copy-paste security improvements
+3. ~~**systemd hardening** - Copy-paste security improvements~~ ✅ DONE
 4. ~~**Basic Prometheus metrics** - Connection count, auth rate~~ ✅ DONE
-5. **Ansible role skeleton** - Standardize deployments
+5. ~~**Ansible role skeleton** - Standardize deployments~~ ✅ DONE
 
 ---
 
@@ -927,9 +937,11 @@ These items provide immediate value with minimal effort:
 ## Next Steps
 
 1. ~~Begin Phase 1.1 (Prometheus metrics) - highest impact~~ ✅ DONE
-2. Create Ansible role skeleton for standardization (Phase 2.1)
+2. ~~Create Ansible role skeleton for standardization (Phase 2.1)~~ ✅ DONE
 3. Set up GitOps repository structure (Phase 5.1)
 4. ~~Deploy Grafana dashboards for existing tracing logs~~ ✅ DONE
 5. Document current state baseline for all 184 locations
-6. Implement systemd hardening template (Phase 2.3)
+6. ~~Implement systemd hardening template (Phase 2.3)~~ ✅ DONE
 7. ~~Add OpenTelemetry tracing (Phase 1.4)~~ ✅ DONE
+8. Begin Phase 3: High Availability implementation
+9. Implement graceful shutdown with connection draining (Phase 3.4)
