@@ -368,7 +368,7 @@ Each location runs HAProxy in front of TACACS+ servers for load balancing and fa
 
 **Implemented in**: [ansible/roles/tacacs_ha/](ansible/roles/tacacs_ha/) - HAProxy configuration with health checks, multiple frontends (legacy/TLS/HTTP), and systemd hardening.
 
-### 3.2 PostgreSQL HA (Policy Ingest)
+### 3.2 PostgreSQL HA (Policy Ingest) ✅ COMPLETE
 
 Deploy PostgreSQL with Patroni for policy-ingest service:
 
@@ -391,6 +391,13 @@ Deploy PostgreSQL with Patroni for policy-ingest service:
 │   └─────────────────────────────────────┘        │
 └───────────────────────────────────────────────────┘
 ```
+
+**Implemented in**:
+
+- [ansible/roles/etcd/](ansible/roles/etcd/) - 3-node etcd cluster for Patroni DCS
+- [ansible/roles/patroni/](ansible/roles/patroni/) - Patroni-managed PostgreSQL with automatic failover
+- [ansible/roles/pgbouncer/](ansible/roles/pgbouncer/) - Connection pooling with transaction mode
+- [ansible/playbooks/deploy-postgresql-ha.yml](ansible/playbooks/deploy-postgresql-ha.yml) - Full stack deployment
 
 ### 3.3 BGP Anycast
 
