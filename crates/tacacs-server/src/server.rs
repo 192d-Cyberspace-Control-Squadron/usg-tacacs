@@ -100,6 +100,45 @@ impl Drop for ConnGuard {
     }
 }
 
+/// Configuration for connection-level settings.
+///
+/// Groups connection timeout and rate limiting settings.
+/// TODO: Use this in serve_tls(), serve_legacy(), and handle_connection()
+/// to reduce parameter count.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct ConnectionConfig {
+    pub single_connect_idle_secs: u64,
+    pub single_connect_keepalive_secs: u64,
+    pub conn_limiter: ConnLimiter,
+}
+
+/// Shared authentication context containing policy, credentials, and secrets.
+///
+/// Groups all authentication-related shared state.
+/// TODO: Use this in serve_tls(), serve_legacy(), and handle_connection()
+/// to reduce parameter count.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct AuthContext {
+    pub policy: Arc<RwLock<PolicyEngine>>,
+    pub secret: Option<Arc<Vec<u8>>>,
+    pub credentials: Arc<StaticCreds>,
+    pub ldap: Option<Arc<LdapConfig>>,
+}
+
+/// Context for handling individual connections.
+///
+/// Groups connection-specific state and timeouts.
+/// TODO: Use this in handle_connection() to reduce parameter count.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(crate) struct ConnectionContext {
+    pub peer: String,
+    pub single_connect_idle_secs: u64,
+    pub single_connect_keepalive_secs: u64,
+}
+
 fn enforce_client_cert_policy(
     stream: &TlsStream<tokio::net::TcpStream>,
     peer: &SocketAddr,
@@ -1224,54 +1263,43 @@ where
                 let state = auth_states
                     .entry(session_id)
                     .or_insert_with(|| match &packet {
-                        AuthenPacket::Start(start) => AuthSessionState::new_from_start(
-                            &start.header,
-                            start.authen_type,
-                            start.user.clone(),
-                            start.user_raw.clone(),
-                            start.port.clone(),
-                            start.port_raw.clone(),
-                            start.rem_addr.clone(),
-                            start.rem_addr_raw.clone(),
-                            start.service,
-                            start.action,
-                        )
-                        .unwrap_or(AuthSessionState {
-                            last_seq: start.header.seq_no,
-                            expect_client: false,
-                            authen_type: Some(start.authen_type),
-                            challenge: None,
-                            username: if start.user_raw.is_empty() || start.user.is_empty() {
-                                None
-                            } else {
-                                Some(start.user.clone())
-                            },
-                            username_raw: if start.user_raw.is_empty() {
-                                None
-                            } else {
-                                Some(start.user_raw.clone())
-                            },
-                            port: Some(start.port.clone()),
-                            port_raw: if start.port_raw.is_empty() {
-                                None
-                            } else {
-                                Some(start.port_raw.clone())
-                            },
-                            rem_addr: Some(start.rem_addr.clone()),
-                            rem_addr_raw: if start.rem_addr_raw.is_empty() {
-                                None
-                            } else {
-                                Some(start.rem_addr_raw.clone())
-                            },
-                            service: Some(start.service),
-                            action: Some(start.action),
-                            ascii_need_user: start.user.is_empty(),
-                            ascii_need_pass: start.data.is_empty(),
-                            chap_id: None,
-                            ascii_attempts: 0,
-                            ascii_user_attempts: 0,
-                            ascii_pass_attempts: 0,
-                        }),
+                        AuthenPacket::Start(start) => AuthSessionState::from_start(start)
+                            .unwrap_or(AuthSessionState {
+                                last_seq: start.header.seq_no,
+                                expect_client: false,
+                                authen_type: Some(start.authen_type),
+                                challenge: None,
+                                username: if start.user_raw.is_empty() || start.user.is_empty() {
+                                    None
+                                } else {
+                                    Some(start.user.clone())
+                                },
+                                username_raw: if start.user_raw.is_empty() {
+                                    None
+                                } else {
+                                    Some(start.user_raw.clone())
+                                },
+                                port: Some(start.port.clone()),
+                                port_raw: if start.port_raw.is_empty() {
+                                    None
+                                } else {
+                                    Some(start.port_raw.clone())
+                                },
+                                rem_addr: Some(start.rem_addr.clone()),
+                                rem_addr_raw: if start.rem_addr_raw.is_empty() {
+                                    None
+                                } else {
+                                    Some(start.rem_addr_raw.clone())
+                                },
+                                service: Some(start.service),
+                                action: Some(start.action),
+                                ascii_need_user: start.user.is_empty(),
+                                ascii_need_pass: start.data.is_empty(),
+                                chap_id: None,
+                                ascii_attempts: 0,
+                                ascii_user_attempts: 0,
+                                ascii_pass_attempts: 0,
+                            }),
                         AuthenPacket::Continue(cont) => AuthSessionState {
                             last_seq: cont.header.seq_no,
                             expect_client: false,

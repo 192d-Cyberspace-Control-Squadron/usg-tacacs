@@ -311,6 +311,7 @@ mod tests {
         creds
     }
 
+    #[cfg(test)]
     fn make_argon_creds() -> StaticCreds {
         let mut creds = StaticCreds::default();
         // Valid argon2id hash for password "test123"
@@ -333,20 +334,24 @@ mod tests {
     }
 
     fn make_test_session_state() -> AuthSessionState {
-        let header = make_test_header();
-        AuthSessionState::new_from_start(
-            &header,
-            0x01, // PAP
-            "testuser".into(),
-            b"testuser".to_vec(),
-            "console".into(),
-            b"console".to_vec(),
-            "192.168.1.1".into(),
-            b"192.168.1.1".to_vec(),
-            0x01, // service
-            0x01, // action
-        )
-        .unwrap()
+        use usg_tacacs_proto::authen::AuthenStart;
+
+        let start = AuthenStart {
+            header: make_test_header(),
+            action: 0x01,
+            priv_lvl: 1,
+            authen_type: 0x01, // PAP
+            service: 0x01,
+            user_raw: b"testuser".to_vec(),
+            user: "testuser".into(),
+            port_raw: b"console".to_vec(),
+            port: "console".into(),
+            rem_addr_raw: b"192.168.1.1".to_vec(),
+            rem_addr: "192.168.1.1".into(),
+            data: vec![],
+        };
+
+        AuthSessionState::from_start(&start).unwrap()
     }
 
     // ==================== verify_pap Tests ====================

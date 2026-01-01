@@ -970,17 +970,23 @@ Document per-location sizing:
 | `ldap_pool_size`     | 5       | 20    | LDAP throughput |
 | `policy_cache_ttl`   | 60s     | 300s  | Reduced I/O     |
 
-### 7.5 Code Quality Improvements
+### 7.5 Code Quality Improvements ⚙️ (In Progress)
 
 Refactor functions with too many arguments to use configuration structs:
 
-| Function | Location | Args | Proposed Refactor |
-| -------- | -------- | ---- | ----------------- |
-| `serve_tls` | server.rs:604 | 17 | Create `TlsServerConfig` struct |
-| `serve_legacy` | server.rs:685 | 15 | Create `LegacyServerConfig` struct |
-| `handle_connection` | server.rs:757 | 15 | Create `ConnectionContext` struct |
-| `handle_ascii_continue` | ascii.rs:101 | 8 | Create `AsciiContinueContext` struct |
-| `new_from_start` | authen.rs:198 | 10 | Create `AuthenStartParams` struct |
+| Function | Location | Args | Status | Refactor |
+| -------- | -------- | ---- | ------ | -------- |
+| `new_from_start` | authen.rs:198 | 10 → 1 | ✅ **Complete** | New `from_start(&AuthenStart)` method, old method deprecated |
+| `serve_tls` | server.rs:604 | 17 | 🔜 Planned | Create `TlsServerConfig` struct, use `ConnectionConfig` + `AuthContext` |
+| `serve_legacy` | server.rs:685 | 15 | 🔜 Planned | Create `LegacyServerConfig` struct, use `ConnectionConfig` + `AuthContext` |
+| `handle_connection` | server.rs:757 | 15 | 🔜 Planned | Use `ConnectionContext` + `AsciiConfig` + `AuthContext` structs |
+| `handle_ascii_continue` | ascii.rs:101 | 8 | 🔜 Planned | Create `AsciiContinueContext` struct |
+
+**Completed**:
+
+- ✅ `AuthSessionState::from_start()` - Reduced from 10 args to 1 by accepting `&AuthenStart` directly
+- ✅ Created reusable config structs: `ConnectionConfig`, `AuthContext`, `ConnectionContext` (server.rs:103-140)
+- ✅ Fixed `make_argon_creds` - Now properly marked with `#[cfg(test)]` (auth.rs:314)
 
 **Benefits**:
 
@@ -991,11 +997,11 @@ Refactor functions with too many arguments to use configuration structs:
 
 **Dead Code Cleanup**:
 
-| Item | Location | Action |
-| ---- | -------- | ------ |
-| `AuthnTimer` | metrics.rs:231 | Remove or integrate into auth flow |
-| `AuthzTimer` | metrics.rs:259 | Remove or integrate into authz flow |
-| `make_argon_creds` | auth.rs:314 | Remove test helper or mark `#[cfg(test)]` |
+| Item | Location | Status | Notes |
+| ---- | -------- | ------ | ----- |
+| `make_argon_creds` | auth.rs:314 | ✅ **Fixed** | Now marked `#[cfg(test)]` to exclude from release builds |
+| `AuthnTimer` | metrics.rs:231 | 🔜 TODO | Remove or integrate into auth flow (currently only used in tests) |
+| `AuthzTimer` | metrics.rs:259 | 🔜 TODO | Remove or integrate into authz flow (currently only used in tests) |
 
 ---
 

@@ -195,6 +195,44 @@ pub struct AuthSessionState {
 }
 
 impl AuthSessionState {
+    /// Create a new AuthSessionState from an AuthenStart packet.
+    ///
+    /// This is the preferred way to create an AuthSessionState from a start packet.
+    pub fn from_start(start: &AuthenStart) -> Result<Self> {
+        ensure!(start.header.seq_no % 2 == 1, "auth start must use odd seq");
+        Ok(Self {
+            last_seq: start.header.seq_no,
+            expect_client: false,
+            authen_type: Some(start.authen_type),
+            challenge: None,
+            username: Some(start.user.clone()),
+            username_raw: Some(start.user_raw.clone()),
+            port_raw: Some(start.port_raw.clone()),
+            port: if start.port_raw.is_empty() || start.port.is_empty() {
+                None
+            } else {
+                Some(start.port.clone())
+            },
+            rem_addr_raw: Some(start.rem_addr_raw.clone()),
+            rem_addr: if start.rem_addr_raw.is_empty() || start.rem_addr.is_empty() {
+                None
+            } else {
+                Some(start.rem_addr.clone())
+            },
+            chap_id: None,
+            ascii_need_user: false,
+            ascii_need_pass: false,
+            ascii_attempts: 0,
+            ascii_user_attempts: 0,
+            ascii_pass_attempts: 0,
+            service: Some(start.service),
+            action: Some(start.action),
+        })
+    }
+
+    /// Deprecated: Use `from_start()` instead.
+    #[deprecated(since = "0.76.0", note = "Use `from_start()` instead")]
+    #[allow(clippy::too_many_arguments)]
     pub fn new_from_start(
         header: &Header,
         authen_type: u8,
