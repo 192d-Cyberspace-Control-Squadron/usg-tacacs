@@ -188,6 +188,18 @@ pub struct Args {
     /// Service name for OpenTelemetry traces (default: tacacs-server).
     #[arg(long, default_value = "tacacs-server")]
     pub otel_service_name: String,
+
+    /// Graceful shutdown drain timeout in seconds. After receiving SIGTERM,
+    /// the server will stop accepting new connections and wait this long
+    /// for existing connections to complete (default: 30).
+    #[arg(long, default_value_t = 30)]
+    pub shutdown_drain_timeout_secs: u64,
+
+    /// Force shutdown timeout in seconds. After the drain timeout, any
+    /// remaining connections will be forcefully closed after this additional
+    /// timeout (default: 30, total max shutdown time = drain + force).
+    #[arg(long, default_value_t = 30)]
+    pub shutdown_force_timeout_secs: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -434,7 +446,7 @@ mod tests {
     fn load_user_pass_file_empty_lines_skipped() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "admin:password123").unwrap();
-        writeln!(file, "").unwrap();
+        writeln!(file).unwrap();
         writeln!(file, "   ").unwrap();
         writeln!(file, "user:secret456").unwrap();
 
@@ -553,6 +565,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);
@@ -611,6 +625,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);
@@ -667,6 +683,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);
@@ -723,6 +741,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);
@@ -780,6 +800,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);
@@ -836,6 +858,8 @@ mod tests {
             legacy_nad_secret: Vec::new(),
             otlp_endpoint: None,
             otel_service_name: "tacacs-server".into(),
+            shutdown_drain_timeout_secs: 30,
+            shutdown_force_timeout_secs: 30,
         };
 
         let result = credentials_map(&args);

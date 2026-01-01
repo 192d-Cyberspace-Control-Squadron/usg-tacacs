@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber::fmt::time::UtcTime;
@@ -319,6 +320,46 @@ async fn main() -> Result<()> {
     handles.push(tokio::spawn(async move {
         watch_sighup(policy_path, schema_path, policy).await;
     }));
+
+    // Graceful shutdown handler for SIGTERM
+    let shutdown_state = server_state.clone();
+    let drain_timeout = args.shutdown_drain_timeout_secs;
+    let force_timeout = args.shutdown_force_timeout_secs;
+    tokio::spawn(async move {
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                sigterm.recv().await;
+                info!("received SIGTERM, starting graceful shutdown");
+
+                // Phase 1: Stop accepting new connections by marking not ready
+                // This causes /ready to return 503, so load balancers will stop sending traffic
+                shutdown_state.set_ready(false);
+                info!(
+                    drain_timeout_secs = drain_timeout,
+                    "draining connections, /ready now returns 503"
+                );
+
+                // Wait for drain timeout to allow existing connections to complete
+                tokio::time::sleep(Duration::from_secs(drain_timeout)).await;
+                info!(
+                    force_timeout_secs = force_timeout,
+                    "drain timeout reached, waiting for force timeout"
+                );
+
+                // Phase 2: Force timeout - set alive to false (triggers liveness probe failure)
+                // This signals orchestrators like Kubernetes to forcefully terminate if needed
+                shutdown_state.set_alive(false);
+                tokio::time::sleep(Duration::from_secs(force_timeout)).await;
+
+                // Phase 3: Exit the process
+                info!("graceful shutdown complete, exiting");
+                std::process::exit(0);
+            }
+            Err(err) => {
+                error!(error = %err, "failed to install SIGTERM handler");
+            }
+        }
+    });
 
     for handle in handles {
         let _ = handle.await;

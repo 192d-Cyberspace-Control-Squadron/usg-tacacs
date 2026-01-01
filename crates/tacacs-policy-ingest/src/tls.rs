@@ -51,7 +51,7 @@ fn load_certs(path: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'stati
     let f = File::open(path).with_context(|| format!("open cert: {path}"))?;
     let mut r = BufReader::new(f);
     let certs = certs(&mut r).collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(certs.into_iter().map(|c| c.into()).collect())
+    Ok(certs)
 }
 
 fn load_key(path: &str) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {

@@ -132,7 +132,7 @@ pub fn validate_response_header(
     );
     if require_even_seq {
         ensure!(
-            header.seq_no % 2 == 0,
+            header.seq_no.is_multiple_of(2),
             "server TACACS+ packets must use even seq numbers"
         );
     }

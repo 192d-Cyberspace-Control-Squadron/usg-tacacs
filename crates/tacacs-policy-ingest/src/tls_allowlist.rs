@@ -62,32 +62,29 @@ impl ClientCertVerifier for AllowlistVerifier {
         let (_rem, cert) = x509_parser::certificate::X509Certificate::from_der(end_entity.as_ref())
             .map_err(|_| rustls::Error::General("invalid client cert".into()))?;
 
-        if !self.allowed_cn.is_empty() {
-            if let Some(cn) = cert.subject().iter_common_name().next() {
-                if let Ok(cn_str) = cn.as_str() {
-                    if self
-                        .allowed_cn
-                        .iter()
-                        .any(|a| a.eq_ignore_ascii_case(cn_str.trim()))
-                    {
-                        return Ok(ClientCertVerified::assertion());
-                    }
-                }
-            }
+        if !self.allowed_cn.is_empty()
+            && let Some(cn) = cert.subject().iter_common_name().next()
+            && let Ok(cn_str) = cn.as_str()
+            && self
+                .allowed_cn
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(cn_str.trim()))
+        {
+            return Ok(ClientCertVerified::assertion());
         }
 
-        if !self.allowed_san.is_empty() {
-            if let Ok(Some(sans)) = cert.subject_alternative_name() {
-                for san in sans.value.general_names.iter() {
-                    if let GeneralName::DNSName(dns) = san {
-                        let dns_val = dns.to_string();
-                        if self
-                            .allowed_san
-                            .iter()
-                            .any(|a| a.eq_ignore_ascii_case(dns_val.trim()))
-                        {
-                            return Ok(ClientCertVerified::assertion());
-                        }
+        if !self.allowed_san.is_empty()
+            && let Ok(Some(sans)) = cert.subject_alternative_name()
+        {
+            for san in sans.value.general_names.iter() {
+                if let GeneralName::DNSName(dns) = san {
+                    let dns_val = dns.to_string();
+                    if self
+                        .allowed_san
+                        .iter()
+                        .any(|a| a.eq_ignore_ascii_case(dns_val.trim()))
+                    {
+                        return Ok(ClientCertVerified::assertion());
                     }
                 }
             }

@@ -542,17 +542,16 @@ pub fn validate_author_request(req: &AuthorizationRequest) -> Result<()> {
     if let Some(attr) = attrs
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case("priv-lvl"))
+        && let Some(val) = attr.value.as_deref()
     {
-        if let Some(val) = attr.value.as_deref() {
-            let parsed: u32 = val
-                .parse()
-                .map_err(|_| anyhow!("priv-lvl must be numeric"))?;
-            ensure!(parsed <= 0x0f, "priv-lvl must be 0-15");
-            ensure!(
-                parsed as u8 == req.priv_lvl,
-                "priv-lvl attribute must match header priv_lvl"
-            );
-        }
+        let parsed: u32 = val
+            .parse()
+            .map_err(|_| anyhow!("priv-lvl must be numeric"))?;
+        ensure!(parsed <= 0x0f, "priv-lvl must be 0-15");
+        ensure!(
+            parsed as u8 == req.priv_lvl,
+            "priv-lvl attribute must match header priv_lvl"
+        );
     }
 
     Ok(())
@@ -689,7 +688,7 @@ pub fn validate_authen_start(req: &authen::AuthenStart) -> Result<()> {
 /// Validate an outgoing authentication continue packet for basic RFC compliance.
 pub fn validate_authen_continue(req: &authen::AuthenContinue) -> Result<()> {
     ensure!(
-        req.header.seq_no % 2 == 0,
+        req.header.seq_no.is_multiple_of(2),
         "authentication continue must use even sequence number"
     );
     // Only AUTHEN_FLAG_NOECHO is defined for continue requests per RFC.

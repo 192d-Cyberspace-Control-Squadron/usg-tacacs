@@ -74,11 +74,19 @@ async fn health_handler() -> impl IntoResponse {
 }
 
 /// Readiness probe - returns 200 if ready to accept connections, 503 otherwise.
+/// During graceful shutdown (draining), returns 503 with status "draining".
 async fn ready_handler(axum::extract::State(state): axum::extract::State<ServerState>) -> Response {
     if state.is_ready() {
         (
             StatusCode::OK,
             axum::Json(HealthResponse { status: "ready" }),
+        )
+            .into_response()
+    } else if state.is_alive() {
+        // Server is alive but not ready - draining connections during graceful shutdown
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(HealthResponse { status: "draining" }),
         )
             .into_response()
     } else {
@@ -348,6 +356,8 @@ mod tests {
     #[tokio::test]
     async fn test_ready_response_body_not_ready() {
         let state = ServerState::new();
+        // Set alive to false to get "not_ready" instead of "draining"
+        state.set_alive(false);
         let app = build_router(state);
 
         let response = app
@@ -366,6 +376,33 @@ mod tests {
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
 
         assert!(body_str.contains("not_ready"));
+    }
+
+    #[tokio::test]
+    async fn test_ready_response_body_draining() {
+        let state = ServerState::new();
+        // Simulate graceful shutdown: not ready but still alive
+        state.set_ready(false);
+        state.set_alive(true);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("draining"));
     }
 
     #[tokio::test]

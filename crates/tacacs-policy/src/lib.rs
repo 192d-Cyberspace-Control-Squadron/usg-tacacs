@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow};
-use hex;
 use jsonschema::Draft;
 use regex::Regex;
 use serde::Deserialize;
@@ -277,20 +276,20 @@ impl PolicyEngine {
         port: Option<&str>,
         rem_addr: Option<&str>,
     ) -> Option<&str> {
-        if let Some(user) = user {
-            if let Some(custom) = self.ascii_user_prompts.get(&user.to_lowercase()) {
-                return Some(custom.as_str());
-            }
+        if let Some(user) = user
+            && let Some(custom) = self.ascii_user_prompts.get(&user.to_lowercase())
+        {
+            return Some(custom.as_str());
         }
-        if let Some(port) = port {
-            if let Some(custom) = self.ascii_port_prompts.get(port) {
-                return Some(custom.as_str());
-            }
+        if let Some(port) = port
+            && let Some(custom) = self.ascii_port_prompts.get(port)
+        {
+            return Some(custom.as_str());
         }
-        if let Some(rem) = rem_addr {
-            if let Some(custom) = self.ascii_remaddr_prompts.get(rem) {
-                return Some(custom.as_str());
-            }
+        if let Some(rem) = rem_addr
+            && let Some(custom) = self.ascii_remaddr_prompts.get(rem)
+        {
+            return Some(custom.as_str());
         }
         self.ascii_prompts
             .as_ref()
@@ -298,10 +297,10 @@ impl PolicyEngine {
     }
 
     pub fn prompt_password(&self, user: Option<&str>) -> Option<&str> {
-        if let Some(user) = user {
-            if let Some(custom) = self.ascii_password_prompts.get(&user.to_lowercase()) {
-                return Some(custom.as_str());
-            }
+        if let Some(user) = user
+            && let Some(custom) = self.ascii_password_prompts.get(&user.to_lowercase())
+        {
+            return Some(custom.as_str());
         }
         self.ascii_prompts
             .as_ref()
@@ -325,48 +324,47 @@ impl PolicyEngine {
             return true;
         }
         let hex = hex::encode(raw).to_lowercase();
-        if let Some(user) = user {
-            if let Some(override_policy) =
+        if let Some(user) = user
+            && let Some(override_policy) =
                 self.raw_server_msg_user_overrides.get(&user.to_lowercase())
+        {
+            if let Some(allow) = override_policy.allow
+                && !allow
             {
-                if let Some(allow) = override_policy.allow {
-                    if !allow {
+                return false;
+            }
+            if !override_policy.allow_services.is_empty() {
+                if let Some(svc) = service {
+                    if !override_policy.allow_services.contains(&svc) {
                         return false;
                     }
+                } else {
+                    return false;
                 }
-                if !override_policy.allow_services.is_empty() {
-                    if let Some(svc) = service {
-                        if !override_policy.allow_services.contains(&svc) {
-                            return false;
-                        }
-                    } else {
+            }
+            if !override_policy.allow_actions.is_empty() {
+                if let Some(act) = action {
+                    if !override_policy.allow_actions.contains(&act) {
                         return false;
                     }
+                } else {
+                    return false;
                 }
-                if !override_policy.allow_actions.is_empty() {
-                    if let Some(act) = action {
-                        if !override_policy.allow_actions.contains(&act) {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                if override_policy
-                    .deny_prefixes
+            }
+            if override_policy
+                .deny_prefixes
+                .iter()
+                .any(|p| hex.starts_with(&p.to_lowercase()))
+            {
+                return false;
+            }
+            if !override_policy.allow_prefixes.is_empty()
+                && !override_policy
+                    .allow_prefixes
                     .iter()
                     .any(|p| hex.starts_with(&p.to_lowercase()))
-                {
-                    return false;
-                }
-                if !override_policy.allow_prefixes.is_empty()
-                    && !override_policy
-                        .allow_prefixes
-                        .iter()
-                        .any(|p| hex.starts_with(&p.to_lowercase()))
-                {
-                    return false;
-                }
+            {
+                return false;
             }
         }
         if self
@@ -1404,7 +1402,7 @@ mod tests {
         let mut doc = make_policy_doc(vec![make_rule("r1", 10, Effect::Allow, "show.*")]);
         doc.default_allow = true;
         let cloned = doc.clone();
-        assert_eq!(cloned.default_allow, true);
+        assert!(cloned.default_allow);
         assert_eq!(cloned.rules.len(), 1);
         assert_eq!(cloned.rules[0].id, "r1");
     }

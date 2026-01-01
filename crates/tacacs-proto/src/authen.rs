@@ -256,7 +256,10 @@ impl AuthSessionState {
             header.seq_no == self.last_seq.wrapping_add(1),
             "server reply seq mismatch"
         );
-        ensure!(header.seq_no % 2 == 0, "server replies must be even seq");
+        ensure!(
+            header.seq_no.is_multiple_of(2),
+            "server replies must be even seq"
+        );
         self.last_seq = header.seq_no;
         self.expect_client = true;
         Ok(())
