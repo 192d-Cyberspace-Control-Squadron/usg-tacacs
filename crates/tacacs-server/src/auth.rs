@@ -716,4 +716,368 @@ mod tests {
         let result = ldap_fetch_groups_blocking(config, "user");
         assert!(result.is_empty());
     }
+
+    // ==================== verify_password_sources Tests ====================
+
+    #[tokio::test]
+    async fn verify_password_sources_static_creds_match() {
+        let creds = make_creds();
+        let result = verify_password_sources(Some("admin"), b"secret123", &creds, None).await;
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_static_creds_no_match() {
+        let creds = make_creds();
+        let result = verify_password_sources(Some("admin"), b"wrongpassword", &creds, None).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_no_username() {
+        let creds = make_creds();
+        let result = verify_password_sources(None, b"secret123", &creds, None).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_unknown_user() {
+        let creds = make_creds();
+        let result = verify_password_sources(Some("unknown"), b"secret123", &creds, None).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_ldap_non_utf8_password() {
+        let creds = StaticCreds::default();
+        let ldap_cfg = Arc::new(LdapConfig {
+            url: "ldaps://example.com".into(),
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_millis(100),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        });
+        // Non-UTF8 password should fail LDAP path
+        let result =
+            verify_password_sources(Some("user"), &[0xff, 0xfe], &creds, Some(&ldap_cfg)).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_empty_creds() {
+        let creds = StaticCreds::default();
+        let result = verify_password_sources(Some("admin"), b"secret123", &creds, None).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn verify_password_sources_empty_password() {
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("emptypass".into(), "".into());
+        let result = verify_password_sources(Some("emptypass"), b"", &creds, None).await;
+        assert!(result);
+    }
+
+    // ==================== verify_argon_hash Tests ====================
+
+    #[test]
+    fn verify_argon_hash_invalid_format() {
+        // verify_argon_hash is private, test via verify_pap
+        let mut creds = StaticCreds::default();
+        creds.argon.insert("user".into(), "not-argon2-hash".into());
+        assert!(!verify_pap("user", "anypassword", &creds));
+    }
+
+    #[test]
+    fn verify_argon_hash_empty_hash() {
+        let mut creds = StaticCreds::default();
+        creds.argon.insert("user".into(), "".into());
+        assert!(!verify_pap("user", "anypassword", &creds));
+    }
+
+    #[test]
+    fn verify_argon_hash_malformed_params() {
+        let mut creds = StaticCreds::default();
+        creds
+            .argon
+            .insert("user".into(), "$argon2id$v=19$invalid".into());
+        assert!(!verify_pap("user", "anypassword", &creds));
+    }
+
+    // ==================== verify_pap_bytes with argon Tests ====================
+
+    #[test]
+    fn verify_pap_bytes_argon_invalid_hash() {
+        let mut creds = StaticCreds::default();
+        creds.argon.insert("user".into(), "not-a-valid-hash".into());
+        assert!(!verify_pap_bytes("user", b"anypassword", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_unknown_user_no_argon() {
+        let creds = StaticCreds::default();
+        assert!(!verify_pap_bytes("unknown", b"password", &creds));
+    }
+
+    // ==================== verify_pap_bytes_username with argon Tests ====================
+
+    #[test]
+    fn verify_pap_bytes_username_argon_invalid_hash() {
+        let mut creds = StaticCreds::default();
+        creds.argon.insert("user".into(), "not-a-valid-hash".into());
+        assert!(!verify_pap_bytes_username(b"user", b"anypassword", &creds));
+    }
+
+    #[test]
+    fn verify_pap_bytes_username_empty_creds() {
+        let creds = StaticCreds::default();
+        assert!(!verify_pap_bytes_username(b"user", b"pass", &creds));
+    }
+
+    // ==================== LDAP Config Edge Cases ====================
+
+    #[test]
+    fn ldap_authenticate_blocking_uppercase_ldaps() {
+        let config = LdapConfig {
+            url: "LDAPS://example.com".into(), // Uppercase
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_millis(100),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        };
+        // Should pass the protocol check (case-insensitive) but fail to connect
+        let result = ldap_authenticate_blocking(config, "user", "pass");
+        // Will fail due to connection, not protocol check
+        assert!(!result);
+    }
+
+    #[test]
+    fn ldap_fetch_groups_blocking_uppercase_ldaps() {
+        let config = Arc::new(LdapConfig {
+            url: "LDAPS://example.com".into(), // Uppercase
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_millis(100),
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        });
+        // Should pass the protocol check but fail to connect
+        let result = ldap_fetch_groups_blocking(config, "user");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn ldap_config_with_ca_file() {
+        let config = LdapConfig {
+            url: "ldaps://example.com".into(),
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_secs(5),
+            ca_file: Some(PathBuf::from("/path/to/ca.pem")),
+            required_group: vec!["admins".into()],
+            group_attr: "memberOf".into(),
+        };
+        // ca_file path should be set
+        assert!(config.ca_file.is_some());
+        assert_eq!(
+            config.ca_file.as_ref().unwrap().to_str().unwrap(),
+            "/path/to/ca.pem"
+        );
+    }
+
+    #[tokio::test]
+    async fn ldap_config_authenticate_unreachable_server() {
+        let config = LdapConfig {
+            url: "ldaps://127.0.0.1:1".into(), // Unreachable port
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_millis(50), // Short timeout
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        };
+        let result = config.authenticate("user", "pass").await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn ldap_fetch_groups_unreachable_server() {
+        let config = Arc::new(LdapConfig {
+            url: "ldaps://127.0.0.1:1".into(), // Unreachable port
+            bind_dn: "cn=admin".into(),
+            bind_password: "secret".into(),
+            search_base: "dc=example".into(),
+            username_attr: "uid".into(),
+            timeout: Duration::from_millis(50), // Short timeout
+            ca_file: None,
+            required_group: vec![],
+            group_attr: "memberOf".into(),
+        });
+        let result = ldap_fetch_groups(&config, "user").await;
+        assert!(result.is_empty());
+    }
+
+    // ==================== handle_chap_continue Edge Cases ====================
+
+    #[test]
+    fn handle_chap_continue_no_chap_id_set() {
+        let mut state = make_test_session_state();
+        state.chap_id = None; // No CHAP ID set
+        state.challenge = Some(vec![0x11; 16]);
+        let creds = make_creds();
+
+        let mut cont_data = vec![0x42]; // Any ID
+        cont_data.extend_from_slice(&[0u8; 16]);
+
+        // Should proceed since chap_id is None (no mismatch check)
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        // Will fail due to wrong hash, but won't error on ID mismatch
+        assert_eq!(result.status, AUTHEN_STATUS_FAIL);
+    }
+
+    #[test]
+    fn handle_chap_continue_no_challenge() {
+        let mut state = make_test_session_state();
+        state.challenge = None; // No challenge
+        state.chap_id = Some(0x42);
+        let creds = make_creds();
+
+        let mut cont_data = vec![0x42];
+        cont_data.extend_from_slice(&[0u8; 16]);
+
+        // Empty challenge will cause compute_chap_response to return None or wrong result
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        // Will fail - either ERROR or FAIL depending on path
+        assert!(result.status == AUTHEN_STATUS_FAIL || result.status == AUTHEN_STATUS_ERROR);
+    }
+
+    #[test]
+    fn handle_chap_continue_clears_state_on_success() {
+        let mut state = make_test_session_state();
+        let challenge = vec![0x11u8; 16];
+        state.challenge = Some(challenge.clone());
+        let chap_id = 0x42u8;
+        state.chap_id = Some(chap_id);
+
+        let mut creds = StaticCreds::default();
+        creds.plain.insert("admin".into(), "secret".into());
+
+        // Compute correct response
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(b"secret");
+        buf.extend_from_slice(&challenge);
+        let digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut cont_data = vec![chap_id];
+        cont_data.extend_from_slice(digest.as_ref());
+
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_PASS);
+        // Verify state was cleared
+        assert!(state.challenge.is_none());
+        assert!(state.chap_id.is_none());
+    }
+
+    #[test]
+    fn handle_chap_continue_clears_state_on_fail() {
+        let mut state = make_test_session_state();
+        let challenge = vec![0x11u8; 16];
+        state.challenge = Some(challenge.clone());
+        state.chap_id = Some(0x42);
+
+        let creds = make_creds();
+
+        let mut cont_data = vec![0x42];
+        cont_data.extend_from_slice(&[0u8; 16]); // Wrong response
+
+        let result = handle_chap_continue("admin", &cont_data, &mut state, &creds);
+        assert_eq!(result.status, AUTHEN_STATUS_FAIL);
+        // State should be cleared even on failure
+        assert!(state.challenge.is_none());
+        assert!(state.chap_id.is_none());
+    }
+
+    // ==================== compute_chap_response Edge Cases ====================
+
+    #[test]
+    fn compute_chap_response_empty_password() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "".into()); // Empty password
+
+        let chap_id = 0x42u8;
+        let challenge = [0x11u8; 16];
+
+        // Compute expected MD5(id || "" || challenge)
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(&challenge);
+        let expected_digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut continue_data = vec![chap_id];
+        continue_data.extend_from_slice(expected_digest.as_ref());
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn compute_chap_response_long_password() {
+        let mut creds = HashMap::new();
+        let long_password = "a".repeat(1000);
+        creds.insert("admin".into(), long_password.clone());
+
+        let chap_id = 0x42u8;
+        let challenge = [0x11u8; 16];
+
+        // Compute expected response
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(long_password.as_bytes());
+        buf.extend_from_slice(&challenge);
+        let expected_digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut continue_data = vec![chap_id];
+        continue_data.extend_from_slice(expected_digest.as_ref());
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn compute_chap_response_all_zeros_challenge() {
+        let mut creds = HashMap::new();
+        creds.insert("admin".into(), "secret".into());
+
+        let chap_id = 0x00u8;
+        let challenge = [0x00u8; 16]; // All zeros
+
+        // Compute expected response
+        let mut buf = Vec::new();
+        buf.push(chap_id);
+        buf.extend_from_slice(b"secret");
+        buf.extend_from_slice(&challenge);
+        let expected_digest = hash(MessageDigest::md5(), &buf).unwrap();
+
+        let mut continue_data = vec![chap_id];
+        continue_data.extend_from_slice(expected_digest.as_ref());
+
+        let result = compute_chap_response("admin", &creds, &continue_data, &challenge);
+        assert_eq!(result, Some(true));
+    }
 }
