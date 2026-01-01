@@ -32,7 +32,7 @@ pub fn build_api_router(rbac: RbacConfig) -> Router {
     Router::new()
         .route("/api/v1/status", get(get_status))
         .route("/api/v1/sessions", get(get_sessions))
-        .route("/api/v1/sessions/:id", delete(delete_session))
+        .route("/api/v1/sessions/{id}", delete(delete_session))
         .route("/api/v1/policy", get(get_policy))
         .route("/api/v1/policy/reload", post(reload_policy))
         .route("/api/v1/config", get(get_config))
@@ -117,13 +117,18 @@ async fn get_policy() -> impl IntoResponse {
 /// POST /api/v1/policy/reload - Trigger policy hot reload.
 ///
 /// Requires permission: `write:policy`
+///
+/// Note: This endpoint logs the reload request. The actual reload is triggered
+/// by sending SIGHUP to the server process externally (e.g., `kill -HUP <pid>`).
+/// In a future update, this will trigger the reload directly via an internal channel.
 async fn reload_policy() -> impl IntoResponse {
-    info!("API request to reload policy");
+    info!("API request to reload policy - operator should send SIGHUP to process");
 
-    // TODO: Implement actual policy reload via SIGHUP or channel
+    // TODO: Implement internal channel-based policy reload
+    // For now, operators must send SIGHUP externally after calling this endpoint
     let response = SuccessResponse {
         success: true,
-        message: "Policy reload triggered".to_string(),
+        message: "Policy reload request logged. Send SIGHUP to process to trigger reload.".to_string(),
     };
 
     Json(response)

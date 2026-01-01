@@ -334,7 +334,7 @@ mod tests {
     }
 
     fn make_test_session_state() -> AuthSessionState {
-        use usg_tacacs_proto::authen::AuthenStart;
+        use usg_tacacs_proto::AuthenStart;
 
         let start = AuthenStart {
             header: make_test_header(),

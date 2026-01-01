@@ -304,6 +304,33 @@ async fn main() -> Result<()> {
         }));
     }
 
+    // Start Management API server if enabled
+    if args.api_enabled {
+        let api_addr = args
+            .api_listen
+            .context("--api-listen is required when --api-enabled is set")?;
+
+        // Load RBAC configuration from file or use defaults
+        let rbac_config = if let Some(rbac_path) = args.api_rbac_config.as_ref() {
+            let rbac_json = std::fs::read_to_string(rbac_path)
+                .with_context(|| format!("failed to read RBAC config from {}", rbac_path.display()))?;
+            serde_json::from_str(&rbac_json)
+                .with_context(|| format!("failed to parse RBAC config from {}", rbac_path.display()))?
+        } else {
+            info!("using default RBAC configuration (admin, operator, viewer roles)");
+            crate::api::RbacConfig::default()
+        };
+
+        // TODO: TLS support for API - for now only plaintext
+        let tls_acceptor = None;
+
+        handles.push(tokio::spawn(async move {
+            if let Err(err) = crate::api::serve_api(api_addr, tls_acceptor, rbac_config).await {
+                error!(error = %err, "Management API server stopped");
+            }
+        }));
+    }
+
     // Initialize policy rules count metric
     {
         let policy = shared_policy.read().await;

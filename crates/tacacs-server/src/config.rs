@@ -669,6 +669,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
@@ -744,6 +750,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
@@ -817,6 +829,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
@@ -890,6 +908,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
@@ -964,6 +988,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
@@ -1037,6 +1067,12 @@ mod tests {
             openbao_pki_common_name: None,
             openbao_pki_ttl_hours: 720,
             openbao_pki_renewal_threshold: 70,
+            api_enabled: false,
+            api_listen: None,
+            api_tls_cert: None,
+            api_tls_key: None,
+            api_client_ca: None,
+            api_rbac_config: None,
         };
 
         let result = credentials_map(&args);
