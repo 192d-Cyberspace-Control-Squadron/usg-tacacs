@@ -112,4 +112,62 @@ mod tests {
 
         assert_eq!(config.location, None);
     }
+
+    // ==================== TelemetryConfig Debug Tests ====================
+
+    #[test]
+    fn test_telemetry_config_debug() {
+        let config = TelemetryConfig::new(
+            "http://localhost:4317".to_string(),
+            "test-service".to_string(),
+            Some("DC1".to_string()),
+        );
+
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TelemetryConfig"));
+        assert!(debug_str.contains("localhost:4317"));
+        assert!(debug_str.contains("test-service"));
+        assert!(debug_str.contains("DC1"));
+    }
+
+    // ==================== TelemetryConfig Clone Tests ====================
+
+    #[test]
+    fn test_telemetry_config_clone() {
+        let config = TelemetryConfig::new(
+            "http://localhost:4317".to_string(),
+            "test-service".to_string(),
+            Some("NYC01".to_string()),
+        );
+
+        let cloned = config.clone();
+
+        assert_eq!(cloned.otlp_endpoint, config.otlp_endpoint);
+        assert_eq!(cloned.service_name, config.service_name);
+        assert_eq!(cloned.location, config.location);
+    }
+
+    #[test]
+    fn test_telemetry_config_clone_without_location() {
+        let config = TelemetryConfig::new(
+            "http://collector:4317".to_string(),
+            "another-service".to_string(),
+            None,
+        );
+
+        let cloned = config.clone();
+
+        assert_eq!(cloned.otlp_endpoint, "http://collector:4317");
+        assert_eq!(cloned.service_name, "another-service");
+        assert_eq!(cloned.location, None);
+    }
+
+    // ==================== shutdown_telemetry Tests ====================
+
+    #[test]
+    fn test_shutdown_telemetry_does_not_panic() {
+        // Simply verify shutdown doesn't panic when called
+        // (even if no tracer is initialized)
+        shutdown_telemetry();
+    }
 }

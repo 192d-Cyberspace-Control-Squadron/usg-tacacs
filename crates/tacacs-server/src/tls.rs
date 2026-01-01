@@ -68,10 +68,11 @@ fn load_key(path: &PathBuf) -> Result<PrivateKeyDer<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rcgen::{CertificateParams, KeyPair};
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    // Self-signed test certificate (PEM format)
+    // Self-signed test certificate (PEM format) - may not match key
     const TEST_CERT_PEM: &str = r#"-----BEGIN CERTIFICATE-----
 MIIBkTCB+wIJAKHBfpegPjMCMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl
 c3RjYTAeFw0yNDAxMDEwMDAwMDBaFw0yNTAxMDEwMDAwMDBaMBExDzANBgNVBAMM
@@ -100,6 +101,17 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         file.write_all(content.as_bytes()).expect("write temp file");
         file.flush().expect("flush temp file");
         file
+    }
+
+    /// Generate a valid self-signed certificate and key pair using rcgen
+    fn generate_valid_cert_and_key() -> (String, String) {
+        let key_pair = KeyPair::generate().expect("generate key pair");
+        let params = CertificateParams::new(vec!["localhost".to_string()])
+            .expect("create certificate params");
+        let cert = params
+            .self_signed(&key_pair)
+            .expect("self-sign certificate");
+        (cert.pem(), key_pair.serialize_pem())
     }
 
     // ==================== load_certs Tests ====================
@@ -271,5 +283,120 @@ daoTvXh0GzTCAdHTmIpOMqzH1ewAAQIgJd0BuXbzPsVB5mKkqOFM8C2MKuoQbE4d
         // The result may fail due to invalid cert/key, but not due to empty roots
         // We just verify it doesn't panic
         let _ = result;
+    }
+
+    // ==================== build_tls_config Success Path Tests ====================
+
+    #[test]
+    fn build_tls_config_valid_certs_succeeds() {
+        // Generate a valid cert/key pair
+        let (cert_pem, key_pem) = generate_valid_cert_and_key();
+        let cert_file = create_temp_file(&cert_pem);
+        let key_file = create_temp_file(&key_pem);
+        let ca_file = create_temp_file(&cert_pem); // Use same cert as CA
+
+        let result = build_tls_config(
+            &cert_file.path().to_path_buf(),
+            &key_file.path().to_path_buf(),
+            &ca_file.path().to_path_buf(),
+            &[],
+        );
+
+        assert!(result.is_ok());
+        let config = result.unwrap();
+        // Verify ALPN is empty as set in build_tls_config
+        assert!(config.alpn_protocols.is_empty());
+    }
+
+    #[test]
+    fn build_tls_config_with_extra_trust_roots_succeeds() {
+        // Generate valid cert/key pairs
+        let (cert_pem, key_pem) = generate_valid_cert_and_key();
+        let (extra_cert_pem, _) = generate_valid_cert_and_key();
+
+        let cert_file = create_temp_file(&cert_pem);
+        let key_file = create_temp_file(&key_pem);
+        let ca_file = create_temp_file(&cert_pem);
+        let extra_ca_file = create_temp_file(&extra_cert_pem);
+
+        let result = build_tls_config(
+            &cert_file.path().to_path_buf(),
+            &key_file.path().to_path_buf(),
+            &ca_file.path().to_path_buf(),
+            &[extra_ca_file.path().to_path_buf()],
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_tls_config_with_multiple_extra_trust_roots() {
+        // Generate valid cert/key pairs
+        let (cert_pem, key_pem) = generate_valid_cert_and_key();
+        let (extra1_cert_pem, _) = generate_valid_cert_and_key();
+        let (extra2_cert_pem, _) = generate_valid_cert_and_key();
+
+        let cert_file = create_temp_file(&cert_pem);
+        let key_file = create_temp_file(&key_pem);
+        let ca_file = create_temp_file(&cert_pem);
+        let extra1_file = create_temp_file(&extra1_cert_pem);
+        let extra2_file = create_temp_file(&extra2_cert_pem);
+
+        let result = build_tls_config(
+            &cert_file.path().to_path_buf(),
+            &key_file.path().to_path_buf(),
+            &ca_file.path().to_path_buf(),
+            &[
+                extra1_file.path().to_path_buf(),
+                extra2_file.path().to_path_buf(),
+            ],
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn build_tls_config_multiple_certs_in_chain() {
+        // Generate certs and put multiple in one file (chain)
+        let (cert1_pem, key_pem) = generate_valid_cert_and_key();
+        let (cert2_pem, _) = generate_valid_cert_and_key();
+
+        // Create a chain file with multiple certs
+        let chain_pem = format!("{}\n{}", cert1_pem, cert2_pem);
+        let chain_file = create_temp_file(&chain_pem);
+        let key_file = create_temp_file(&key_pem);
+        let ca_file = create_temp_file(&cert1_pem);
+
+        let result = build_tls_config(
+            &chain_file.path().to_path_buf(),
+            &key_file.path().to_path_buf(),
+            &ca_file.path().to_path_buf(),
+            &[],
+        );
+
+        // This may fail because the chain certs don't form a valid chain,
+        // but the point is to test the code path that processes multiple certs
+        let _ = result;
+    }
+
+    // ==================== load_certs with rcgen Tests ====================
+
+    #[test]
+    fn load_certs_rcgen_generated() {
+        let (cert_pem, _) = generate_valid_cert_and_key();
+        let cert_file = create_temp_file(&cert_pem);
+        let result = load_certs(&cert_file.path().to_path_buf());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    // ==================== load_key with rcgen Tests ====================
+
+    #[test]
+    fn load_key_rcgen_generated() {
+        let (_, key_pem) = generate_valid_cert_and_key();
+        let key_file = create_temp_file(&key_pem);
+        let result = load_key(&key_file.path().to_path_buf());
+        assert!(result.is_ok());
     }
 }

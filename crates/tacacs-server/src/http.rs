@@ -254,4 +254,178 @@ mod tests {
         state.set_alive(false);
         assert!(!state.is_alive());
     }
+
+    // ==================== ServerState Default Tests ====================
+
+    #[test]
+    fn test_server_state_default() {
+        let state = ServerState::default();
+        // Default should be same as new()
+        assert!(!state.is_ready());
+        assert!(state.is_alive());
+    }
+
+    // ==================== Live Handler Dead State Tests ====================
+
+    #[tokio::test]
+    async fn test_live_endpoint_not_alive() {
+        let state = ServerState::new();
+        state.set_alive(false);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // ==================== Clone Tests ====================
+
+    #[test]
+    fn test_server_state_clone_shares_state() {
+        let state1 = ServerState::new();
+        let state2 = state1.clone();
+
+        // Changes in one clone should be visible in the other (they share the same Arc)
+        state1.set_ready(true);
+        assert!(state2.is_ready());
+
+        state2.set_alive(false);
+        assert!(!state1.is_alive());
+    }
+
+    // ==================== Response Body Tests ====================
+
+    #[tokio::test]
+    async fn test_health_response_body() {
+        let state = ServerState::new();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("healthy"));
+    }
+
+    #[tokio::test]
+    async fn test_ready_response_body_ready() {
+        let state = ServerState::new();
+        state.set_ready(true);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("ready"));
+    }
+
+    #[tokio::test]
+    async fn test_ready_response_body_not_ready() {
+        let state = ServerState::new();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("not_ready"));
+    }
+
+    #[tokio::test]
+    async fn test_live_response_body_alive() {
+        let state = ServerState::new();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("alive"));
+    }
+
+    #[tokio::test]
+    async fn test_live_response_body_dead() {
+        let state = ServerState::new();
+        state.set_alive(false);
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/live").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+
+        assert!(body_str.contains("dead"));
+    }
+
+    #[tokio::test]
+    async fn test_metrics_content_type() {
+        let state = ServerState::new();
+        let app = build_router(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let content_type = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("text/plain"));
+    }
 }
